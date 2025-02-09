@@ -1,11 +1,8 @@
 #!/bin/bash
 
-DEVICE="1"
+DEVICE="0"
 
-OUTPUT_DIR="/mnt/data4_HDD_14TB/yang/voxceleb-checkpoints/xvector/voxceleb1/finetune"
-
-FREEZE_BASE_MODEL="True"
-USE_WEIGHTED_LAYER_SUM="False"
+OUTPUT_DIR="/mnt/data4_HDD_14TB/yang/voxceleb-checkpoints/ecapa-tdnn/voxceleb1/finetune"
 
 MAX_LENGTH="3"
 BATCH_SIZE="256"
@@ -14,9 +11,9 @@ NUM_EPOCHS="10"
 
 EXP_NAME="len$MAX_LENGTH-bs$BATCH_SIZE-lr$LEARNING_RATE"
 
-CUDA_VISIBLE_DEVICES=$DEVICE /home/yang/miniconda3/envs/confit/bin/python train_xvector_voxceleb1.py \
-    --model_name_or_path "confit/xvector-voxceleb1" \
-    --config_name "/home/yang/data/audio/spkreg-voxceleb/configs/xvector-voxceleb1/config.json" \
+CUDA_VISIBLE_DEVICES=$DEVICE /home/yang/miniconda3/envs/confit/bin/python train_ecapa_tdnn_voxceleb1.py \
+    --model_name_or_path "confit/ecapa-tdnn-voxceleb1" \
+    --config_name "/home/yang/data/audio/spkreg-voxceleb/configs/ecapa-tdnn-voxceleb1/config.json" \
     --dataset_name "confit/voxceleb" \
     --data_dir "/mnt/data1_HDD_14TB/yang/corpus/audio/VoxCeleb1" \
     --audio_column_name "audio" \

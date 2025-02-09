@@ -113,7 +113,7 @@ class XVectorForSequenceClassification(XVectorPreTrainedModel):
         self.xvector = XVectorModel(config)
         self.classifier = SpeakerDecoder(**config.decoder_config)
 
-        if config.objective == 'angular':
+        if config.objective == 'additive_angular_margin':
             self.loss_fct = AngularSoftmaxLoss(**config.objective_config)
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(**config.objective_config)

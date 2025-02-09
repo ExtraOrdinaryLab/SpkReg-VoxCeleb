@@ -49,7 +49,7 @@ class XVectorConfig(PretrainedConfig):
         emb_sizes: Union[int, list] = 256,
         pool_mode: str = 'xvector',
         attention_channels: int = 128,
-        objective: str = 'cross_entropy', # angular, cross_entropy
+        objective: str = 'additive_angular_margin', # additive_angular_margin, cross_entropy
         angular_scale = 30, 
         angular_margin: float = 0.2, 
         label_smoothing: float = 0.0, 
@@ -158,7 +158,7 @@ class XVectorConfig(PretrainedConfig):
         # Decoder configuration
         self.emb_sizes = emb_sizes
         self.pool_mode = pool_mode
-        self.angular = True if objective == 'angular' else False
+        self.angular = True if objective in ['additive_angular_margin'] else False
         self.attention_channels = attention_channels
         self.decoder_config = {
             "feat_in": filters[-1],
@@ -172,7 +172,7 @@ class XVectorConfig(PretrainedConfig):
 
         # Loss function configuration
         self.objective = objective
-        if objective == 'angular':
+        if objective in ['additive_angular_margin']:
             self.objective_config = {
                 "scale": angular_scale, 
                 "margin": angular_margin, 

@@ -8,7 +8,7 @@ from transformers.utils import PaddingStrategy, TensorType
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 
 
-class ECAPATDNNFeatureExtractor(SequenceFeatureExtractor):
+class EcapaTdnnFeatureExtractor(SequenceFeatureExtractor):
     
     model_input_names = ["input_values", "attention_mask"]
 

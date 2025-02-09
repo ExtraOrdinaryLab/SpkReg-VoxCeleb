@@ -7,15 +7,15 @@ import torch.nn as nn
 from transformers import PreTrainedModel
 from transformers.utils import ModelOutput
 
-from .configuration_ecapa_tdnn import ECAPATDNNConfig
+from .configuration_ecapa_tdnn import EcapaTdnnConfig
 from .audio_processing import AudioToMelSpectrogramPreprocessor
 from .audio_processing import SpectrogramAugmentation
-from .conv_asr import ECAPAEncoder, SpeakerDecoder
+from .conv_asr import EcapaTdnnEncoder, SpeakerDecoder
 from .angular_loss import AngularSoftmaxLoss
 
 
 @dataclass
-class ECAPATDNNBaseModelOutput(ModelOutput):
+class EcapaTdnnBaseModelOutput(ModelOutput):
 
     encoder_outputs: torch.FloatTensor = None
     extract_features: torch.FloatTensor = None
@@ -23,16 +23,16 @@ class ECAPATDNNBaseModelOutput(ModelOutput):
 
 
 @dataclass
-class ECAPATDNNSequenceClassifierOutput(ModelOutput):
+class EcapaTdnnSequenceClassifierOutput(ModelOutput):
 
     loss: torch.FloatTensor = None
     logits: torch.FloatTensor = None
     embeddings: torch.FloatTensor = None
 
 
-class ECAPATDNNPreTrainedModel(PreTrainedModel):
+class EcapaTdnnPreTrainedModel(PreTrainedModel):
 
-    config_class = ECAPATDNNConfig
+    config_class = EcapaTdnnConfig
     base_model_prefix = "ecapa_tdnn"
     main_input_name = "input_values"
 
@@ -69,15 +69,15 @@ class ECAPATDNNPreTrainedModel(PreTrainedModel):
         return num
 
 
-class ECAPATDNNModel(ECAPATDNNPreTrainedModel):
+class EcapaTdnnModel(EcapaTdnnPreTrainedModel):
 
-    def __init__(self, config: ECAPATDNNConfig):
+    def __init__(self, config: EcapaTdnnConfig):
         super().__init__(config)
         self.config = config
 
         self.preprocessor = AudioToMelSpectrogramPreprocessor(**config.mel_spectrogram_config)
         self.spec_augment = SpectrogramAugmentation(**config.spectrogram_augmentation_config)
-        self.encoder = ECAPAEncoder(**config.encoder_config)
+        self.encoder = EcapaTdnnEncoder(**config.encoder_config)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -86,33 +86,36 @@ class ECAPATDNNModel(ECAPATDNNPreTrainedModel):
         self,
         input_values: Optional[torch.Tensor],
         attention_mask: Optional[torch.Tensor] = None, 
-    ) -> Union[Tuple, ECAPATDNNBaseModelOutput]:
+    ) -> Union[Tuple, EcapaTdnnBaseModelOutput]:
         if attention_mask is None:
-            attention_mask = torch.ones_like(input_values).to(input_values.device)
+            attention_mask = torch.ones_like(input_values).to(input_values)
         lengths = attention_mask.sum(dim=1).long()
         extract_features, output_lengths = self.preprocessor(input_values, lengths)
-        extract_features = self.spec_augment(extract_features, output_lengths)
+        if self.training:
+            extract_features = self.spec_augment(extract_features, output_lengths)
         encoder_outputs, output_lengths = self.encoder(extract_features, output_lengths)
 
-        return ECAPATDNNBaseModelOutput(
+        return EcapaTdnnBaseModelOutput(
             encoder_outputs=encoder_outputs, 
             extract_features=extract_features, 
             output_lengths=output_lengths, 
         )
 
 
-class ECAPATDNNForSequenceClassification(ECAPATDNNPreTrainedModel):
+class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
 
-    def __init__(self, config: ECAPATDNNConfig):
+    def __init__(self, config: EcapaTdnnConfig):
         super().__init__(config)
 
-        self.ecapa_tdnn = ECAPATDNNModel(config)
+        self.ecapa_tdnn = EcapaTdnnModel(config)
         self.classifier = SpeakerDecoder(**config.decoder_config)
 
-        if config.objective == 'angular':
+        if config.objective == 'additive_angular_margin':
             self.loss_fct = AngularSoftmaxLoss(**config.objective_config)
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(**config.objective_config)
+
+        self.init_weights()
 
     def freeze_base_model(self):
         for param in self.ecapa_tdnn.parameters():
@@ -123,21 +126,22 @@ class ECAPATDNNForSequenceClassification(ECAPATDNNPreTrainedModel):
         input_values: Optional[torch.Tensor],
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
-    ):
-        ecapa_outputs = self.ecapa_tdnn(
+    ) -> Union[Tuple, EcapaTdnnSequenceClassifierOutput]:
+        ecapa_tdnn_outputs = self.ecapa_tdnn(
             input_values, 
             attention_mask, 
         )
         logits, output_embeddings = self.classifier(
-            ecapa_outputs.encoder_outputs, 
-            ecapa_outputs.output_lengths
+            ecapa_tdnn_outputs.encoder_outputs, 
+            ecapa_tdnn_outputs.output_lengths
         )
+        logits = logits.view(-1, self.config.num_labels)
 
         loss = None
         if labels is not None:
-            loss = self.loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
+            loss = self.loss_fct(logits, labels.view(-1))
 
-        return ECAPATDNNSequenceClassifierOutput(
+        return EcapaTdnnSequenceClassifierOutput(
             loss=loss,
             logits=logits,
             embeddings=output_embeddings, 

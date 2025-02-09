@@ -278,6 +278,7 @@ class TDNNSEModule(nn.Module):
 
 
 class MaskedConv1d(nn.Module):
+    
     __constants__ = ["use_conv_mask", "real_out_channels", "heads"]
 
     def __init__(

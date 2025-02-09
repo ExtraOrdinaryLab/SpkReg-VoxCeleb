@@ -3,7 +3,7 @@ from typing import Any, Union
 from transformers.configuration_utils import PretrainedConfig
 
 
-class ECAPATDNNConfig(PretrainedConfig):
+class EcapaTdnnConfig(PretrainedConfig):
 
     def __init__(
         self, 
@@ -31,7 +31,7 @@ class ECAPATDNNConfig(PretrainedConfig):
         rng: Any = None,
         nb_augmentation_prob: float = 0,
         nb_max_freq: int = 4000,
-        use_torchaudio: bool = True,
+        use_torchaudio: bool = False,
         mel_norm: str = "slaney", 
         freq_masks: int = 0,
         time_masks: int = 0,
@@ -51,7 +51,7 @@ class ECAPATDNNConfig(PretrainedConfig):
         pool_mode: str = 'xvector',
         angular: bool = False,
         attention_channels: int = 128,
-        objective: str = 'angular', # angular, cross_entropy
+        objective: str = 'additive_angular_margin', # additive_angular_margin, cross_entropy
         angular_scale = 30, 
         angular_margin: float = 0.2, 
         label_smoothing: float = 0.0, 
@@ -162,7 +162,7 @@ class ECAPATDNNConfig(PretrainedConfig):
         # Decoder configuration
         self.emb_sizes = emb_sizes
         self.pool_mode = pool_mode
-        self.angular = True if objective == 'angular' else False
+        self.angular = True if objective in ['additive_angular_margin'] else False
         self.attention_channels = attention_channels
         self.decoder_config = {
             "feat_in": filters[-1],
@@ -176,7 +176,7 @@ class ECAPATDNNConfig(PretrainedConfig):
 
         # Loss function configuration
         self.objective = objective
-        if objective == 'angular':
+        if objective in ['additive_angular_margin']:
             self.objective_config = {
                 "scale": angular_scale, 
                 "margin": angular_margin, 

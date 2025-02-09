@@ -8,7 +8,7 @@ from .module import NeuralModule
 from .tdnn_attention import StatsPoolLayer, AttentivePoolLayer, TDNNModule, TDNNSEModule, init_weights
 
 
-class ECAPAEncoder(NeuralModule):
+class EcapaTdnnEncoder(NeuralModule):
     """
     Modified ECAPA Encoder layer without Res2Net module for faster training and inference which achieves
     better numbers on speaker diarization tasks
