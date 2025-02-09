@@ -13,7 +13,7 @@ from .configuration_xvector import XVectorConfig
 from .audio_processing import AudioToMelSpectrogramPreprocessor
 from .audio_processing import SpectrogramAugmentation
 from .conv_asr import XVectorEncoder, SpeakerDecoder
-from .angular_loss import AngularSoftmaxLoss
+from .angular_loss import AdditiveMarginSoftmaxLoss, AdditiveAngularMarginSoftmaxLoss
 
 
 @dataclass
@@ -114,7 +114,9 @@ class XVectorForSequenceClassification(XVectorPreTrainedModel):
         self.classifier = SpeakerDecoder(**config.decoder_config)
 
         if config.objective == 'additive_angular_margin':
-            self.loss_fct = AngularSoftmaxLoss(**config.objective_config)
+            self.loss_fct = AdditiveAngularMarginSoftmaxLoss(**config.objective_config)
+        elif config.objective == 'additive_margin':
+            self.loss_fct = AdditiveMarginSoftmaxLoss(**config.objective_config)
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(**config.objective_config)
 

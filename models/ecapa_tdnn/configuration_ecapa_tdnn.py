@@ -51,7 +51,7 @@ class EcapaTdnnConfig(PretrainedConfig):
         pool_mode: str = 'xvector',
         angular: bool = False,
         attention_channels: int = 128,
-        objective: str = 'additive_angular_margin', # additive_angular_margin, cross_entropy
+        objective: str = 'additive_angular_margin', # additive_margin, additive_angular_margin, cross_entropy
         angular_scale = 30, 
         angular_margin: float = 0.2, 
         label_smoothing: float = 0.0, 
@@ -176,7 +176,7 @@ class EcapaTdnnConfig(PretrainedConfig):
 
         # Loss function configuration
         self.objective = objective
-        if objective in ['additive_angular_margin']:
+        if objective in ['additive_angular_margin', 'additive_margin']:
             self.objective_config = {
                 "scale": angular_scale, 
                 "margin": angular_margin, 

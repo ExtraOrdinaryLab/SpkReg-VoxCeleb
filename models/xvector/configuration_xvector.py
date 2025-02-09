@@ -49,7 +49,7 @@ class XVectorConfig(PretrainedConfig):
         emb_sizes: Union[int, list] = 256,
         pool_mode: str = 'xvector',
         attention_channels: int = 128,
-        objective: str = 'additive_angular_margin', # additive_angular_margin, cross_entropy
+        objective: str = 'cross_entropy', # additive_margin, additive_angular_margin, cross_entropy
         angular_scale = 30, 
         angular_margin: float = 0.2, 
         label_smoothing: float = 0.0, 
@@ -172,7 +172,7 @@ class XVectorConfig(PretrainedConfig):
 
         # Loss function configuration
         self.objective = objective
-        if objective in ['additive_angular_margin']:
+        if objective in ['additive_angular_margin', 'additive_margin']:
             self.objective_config = {
                 "scale": angular_scale, 
                 "margin": angular_margin, 
