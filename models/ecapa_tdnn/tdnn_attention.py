@@ -99,7 +99,7 @@ class AttentivePoolLayer(nn.Module):
         self.feat_in = 2 * inp_filters
 
         self.attention_layer = nn.Sequential(
-            TDNNModule(inp_filters * 3, attention_channels, kernel_size=kernel_size, dilation=dilation),
+            TdnnModule(inp_filters * 3, attention_channels, kernel_size=kernel_size, dilation=dilation),
             nn.Tanh(),
             nn.Conv1d(
                 in_channels=attention_channels,
@@ -134,7 +134,7 @@ class AttentivePoolLayer(nn.Module):
         return torch.cat((mu, sg), dim=1).unsqueeze(2)
 
 
-class TDNNModule(nn.Module):
+class TdnnModule(nn.Module):
     """
     Time Delayed Neural Module (TDNN) - 1D
     input:
@@ -154,7 +154,8 @@ class TDNNModule(nn.Module):
         out_filters: int,
         kernel_size: int = 1,
         dilation: int = 1,
-        stride: int = 1,
+        stride: int = 1, 
+        groups: int = 1,
         padding: int = None,
     ):
         super().__init__()
@@ -166,6 +167,7 @@ class TDNNModule(nn.Module):
             out_channels=out_filters,
             kernel_size=kernel_size,
             dilation=dilation,
+            groups=groups, 
             padding=padding,
         )
 
@@ -224,7 +226,7 @@ class MaskedSEModule(nn.Module):
         return out * input
 
 
-class TDNNSEModule(nn.Module):
+class TdnnSeModule(nn.Module):
     """
     Modified building SE_TDNN group module block from ECAPA implementation for faster training and inference
     Reference: ECAPA-TDNN Embeddings for Speaker Diarization (https://arxiv.org/pdf/2104.01466.pdf)
@@ -260,11 +262,11 @@ class TDNNSEModule(nn.Module):
             groups=group_scale,
         )
         self.group_tdnn_block = nn.Sequential(
-            TDNNModule(inp_filters, out_filters, kernel_size=1, dilation=1),
+            TdnnModule(inp_filters, out_filters, kernel_size=1, dilation=1),
             group_conv,
             nn.ReLU(),
             nn.BatchNorm1d(out_filters),
-            TDNNModule(out_filters, out_filters, kernel_size=1, dilation=1),
+            TdnnModule(out_filters, out_filters, kernel_size=1, dilation=1),
         )
 
         self.se_layer = MaskedSEModule(out_filters, se_channels, out_filters)
@@ -275,6 +277,73 @@ class TDNNSEModule(nn.Module):
         x = self.group_tdnn_block(input)
         x = self.se_layer(x, length)
         return x + input
+
+
+class Res2NetBlock(nn.Module):
+    """
+    Res2Net module that splits input channels into groups and processes them separately before merging.
+    This allows multi-scale feature extraction.
+    """
+    def __init__(self, in_channels, out_channels, scale=4, kernel_size=1, dilation=1):
+        super().__init__()
+        assert in_channels % scale == 0, "in_channels must be divisible by scale"
+        
+        self.scale = scale
+        self.width = in_channels // scale  # Number of channels per group
+        
+        self.convs = nn.ModuleList([
+            nn.Conv1d(self.width, self.width, kernel_size=kernel_size, dilation=dilation, padding=dilation, bias=False)
+            for _ in range(scale - 1)
+        ])
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        """
+        x: [B, C, T]
+        """
+        splits = torch.split(x, self.width, dim=1)
+        outputs = [splits[0]]  # First part remains unchanged
+
+        for i in range(1, self.scale):
+            conv_out = self.convs[i - 1](splits[i])  # Apply convolution on each group
+            outputs.append(conv_out + outputs[i - 1])  # Hierarchical aggregation
+
+        out = torch.cat(outputs, dim=1)  # Merge groups
+        return self.activation(self.bn(out))
+
+
+class TdnnSeRes2NetModule(nn.Module):
+    """
+    SE-TDNN module with Res2Net for ECAPA-TDNN.
+    """
+    def __init__(
+        self,
+        inp_filters: int,
+        out_filters: int,
+        group_scale: int = 1,
+        se_channels: int = 128,
+        kernel_size: int = 1,
+        dilation: int = 1,
+        res2net_scale: int = 8,  # New Res2Net parameter
+    ):
+        super().__init__()
+
+        # First TDNN layer
+        self.tdnn1 = TdnnModule(inp_filters, out_filters, kernel_size=1, dilation=1, groups=group_scale)
+
+        # Res2Net block replaces grouped TDNN
+        self.res2net = Res2NetBlock(out_filters, out_filters, scale=res2net_scale, kernel_size=kernel_size, dilation=dilation)
+
+        # Squeeze-and-Excite module
+        self.se_layer = MaskedSEModule(out_filters, se_channels, out_filters)
+
+    def forward(self, x, length=None):
+        residual = x
+        x = self.tdnn1(x)
+        x = self.res2net(x)  # Apply Res2Net block
+        x = self.se_layer(x, length)
+        return x + residual  # Residual connection
 
 
 class MaskedConv1d(nn.Module):

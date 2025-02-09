@@ -5,7 +5,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .module import NeuralModule
-from .tdnn_attention import StatsPoolLayer, AttentivePoolLayer, TDNNModule, TDNNSEModule, init_weights
+from .tdnn_attention import (
+    StatsPoolLayer, 
+    AttentivePoolLayer, 
+    TdnnModule, 
+    TdnnSeModule, 
+    TdnnSeRes2NetModule, 
+    init_weights
+)
 
 
 class EcapaTdnnEncoder(NeuralModule):
@@ -32,25 +39,40 @@ class EcapaTdnnEncoder(NeuralModule):
         filters: list,
         kernel_sizes: list,
         dilations: list,
-        scale: int = 8,
+        scale: int = 8, 
+        res2net: bool = False, 
+        res2net_scale: int = 8, 
         init_mode: str = 'xavier_uniform',
     ):
         super().__init__()
         self.layers = nn.ModuleList()
-        self.layers.append(TDNNModule(feat_in, filters[0], kernel_size=kernel_sizes[0], dilation=dilations[0]))
+        self.layers.append(TdnnModule(feat_in, filters[0], kernel_size=kernel_sizes[0], dilation=dilations[0]))
 
         for i in range(len(filters) - 2):
-            self.layers.append(
-                TDNNSEModule(
-                    filters[i],
-                    filters[i + 1],
-                    group_scale=scale,
-                    se_channels=128,
-                    kernel_size=kernel_sizes[i + 1],
-                    dilation=dilations[i + 1],
+            if res2net:
+                self.layers.append(
+                    TdnnSeRes2NetModule(
+                        filters[i],
+                        filters[i + 1],
+                        group_scale=scale,
+                        se_channels=128,
+                        kernel_size=kernel_sizes[i + 1],
+                        dilation=dilations[i + 1],
+                        res2net_scale=res2net_scale, 
+                    )
                 )
-            )
-        self.feature_agg = TDNNModule(filters[-1], filters[-1], kernel_sizes[-1], dilations[-1])
+            else:
+                self.layers.append(
+                    TdnnSeModule(
+                        filters[i],
+                        filters[i + 1],
+                        group_scale=scale,
+                        se_channels=128,
+                        kernel_size=kernel_sizes[i + 1],
+                        dilation=dilations[i + 1],
+                    )
+                )
+        self.feature_agg = TdnnModule(filters[-1], filters[-1], kernel_sizes[-1], dilations[-1])
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
     def forward(self, audio_signal, length=None):

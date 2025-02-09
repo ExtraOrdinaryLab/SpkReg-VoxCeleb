@@ -44,6 +44,8 @@
       3,
       1
     ],
+    "res2net": false,
+    "res2net_scale": 8,
     "scale": 8
   },
   "eos_token_id": 2,
@@ -2550,6 +2552,8 @@
   "rect_freq": 20,
   "rect_masks": 0,
   "rect_time": 5,
+  "res2net": false,
+  "res2net_scale": 8,
   "rng": null,
   "sample_rate": 16000,
   "scale": 8,

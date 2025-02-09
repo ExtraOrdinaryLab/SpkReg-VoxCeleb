@@ -46,6 +46,8 @@ class EcapaTdnnConfig(PretrainedConfig):
         kernel_sizes: list = [5, 3, 3, 1, 1],
         dilations: list = [1, 2, 3, 1, 1],
         scale: int = 8,
+        res2net: bool = False, 
+        res2net_scale: int = 8, 
         init_mode: str = 'xavier_uniform', 
         emb_sizes: Union[int, list] = 256,
         pool_mode: str = 'xvector',
@@ -149,14 +151,18 @@ class EcapaTdnnConfig(PretrainedConfig):
         self.kernel_sizes = kernel_sizes
         self.dilations = dilations
         self.scale = scale
+        self.res2net = res2net
+        self.res2net_scale = res2net_scale
         self.init_mode = init_mode
         self.encoder_config = {
-            "feat_in": features,
-            "filters": filters,
-            "kernel_sizes": kernel_sizes,
-            "dilations": dilations,
-            "scale": scale,
-            "init_mode": init_mode,
+            "feat_in": self.features,
+            "filters": self.filters,
+            "kernel_sizes": self.kernel_sizes,
+            "dilations": self.dilations,
+            "scale": self.scale,
+            "res2net": self.res2net, 
+            "res2net_scale": self.res2net_scale, 
+            "init_mode": self.init_mode,
         }
 
         # Decoder configuration
@@ -176,6 +182,9 @@ class EcapaTdnnConfig(PretrainedConfig):
 
         # Loss function configuration
         self.objective = objective
+        self.angular_scale = angular_scale
+        self.angular_margin = angular_margin
+        self.label_smoothing = label_smoothing
         if objective in ['additive_angular_margin', 'additive_margin']:
             self.objective_config = {
                 "scale": angular_scale, 
