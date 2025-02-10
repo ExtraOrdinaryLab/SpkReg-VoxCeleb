@@ -168,7 +168,7 @@ class EcapaTdnnConfig(PretrainedConfig):
         # Decoder configuration
         self.emb_sizes = emb_sizes
         self.pool_mode = pool_mode
-        self.angular = True if objective in ['additive_angular_margin'] else False
+        self.angular = True if objective in ['additive_angular_margin', 'additive_margin'] else False
         self.attention_channels = attention_channels
         self.decoder_config = {
             "feat_in": filters[-1],

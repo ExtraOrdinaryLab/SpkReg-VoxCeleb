@@ -273,8 +273,8 @@ class TdnnSeModule(nn.Module):
 
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
-    def forward(self, input, length=None):
-        x = self.group_tdnn_block(input)
+    def forward(self, inputs, length=None):
+        x = self.group_tdnn_block(inputs)
         x = self.se_layer(x, length)
         return x + input
 
