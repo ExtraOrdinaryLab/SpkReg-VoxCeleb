@@ -1,5 +1,7 @@
 {
   "angular": true,
+  "angular_margin": 0.2,
+  "angular_scale": 30,
   "attention_channels": 128,
   "bos_token_id": 1,
   "decoder_config": {
@@ -13,9 +15,9 @@
   },
   "dilations": [
     1,
-    1,
-    1,
-    1,
+    2,
+    3,
+    4,
     1
   ],
   "dither": 1e-05,
@@ -23,9 +25,9 @@
   "encoder_config": {
     "dilations": [
       1,
-      1,
-      1,
-      1,
+      2,
+      3,
+      4,
       1
     ],
     "feat_in": 80,
@@ -2498,6 +2500,7 @@
     "LABEL_998": 998,
     "LABEL_999": 999
   },
+  "label_smoothing": 0.0,
   "log": true,
   "log_zero_guard_type": "add",
   "log_zero_guard_value": 5.960464477539063e-08,
