@@ -276,7 +276,7 @@ class TdnnSeModule(nn.Module):
     def forward(self, inputs, length=None):
         x = self.group_tdnn_block(inputs)
         x = self.se_layer(x, length)
-        return x + input
+        return x + inputs
 
 
 class Res2NetBlock(nn.Module):
