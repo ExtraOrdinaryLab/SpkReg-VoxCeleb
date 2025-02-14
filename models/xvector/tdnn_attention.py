@@ -9,132 +9,7 @@ import torch.nn.functional as F
 from torch.nn.init import _calculate_correct_fan
 
 
-class StatsPoolLayer(nn.Module):
-    """Statistics and time average pooling (TAP) layer
-
-    This computes mean and, optionally, standard deviation statistics across the time dimension.
-
-    Args:
-        feat_in: Input features with shape [B, D, T]
-        pool_mode: Type of pool mode. Supported modes are 'xvector' (mean and standard deviation) and 'tap' (time
-            average pooling, i.e., mean)
-        eps: Epsilon, minimum value before taking the square root, when using 'xvector' mode.
-        unbiased: Whether to use the biased estimator for the standard deviation when using 'xvector' mode. The default
-            for torch.Tensor.std() is True.
-
-    Returns:
-        Pooled statistics with shape [B, D].
-
-    Raises:
-        ValueError if an unsupported pooling mode is specified.
-    """
-
-    def __init__(self, feat_in: int, pool_mode: str = 'xvector', eps: float = 1e-10, unbiased: bool = True):
-        super().__init__()
-        supported_modes = {"xvector", "tap"}
-        if pool_mode not in supported_modes:
-            raise ValueError(f"Pool mode must be one of {supported_modes}; got '{pool_mode}'")
-        self.pool_mode = pool_mode
-        self.feat_in = feat_in
-        self.eps = eps
-        self.unbiased = unbiased
-        if self.pool_mode == 'xvector':
-            # Mean + std
-            self.feat_in *= 2
-
-    def forward(self, encoder_output, length=None):
-        if length is None:
-            mean = encoder_output.mean(dim=-1)  # Time Axis
-            if self.pool_mode == 'xvector':
-                correction = 1 if self.unbiased else 0
-                std = encoder_output.std(dim=-1, correction=correction).clamp(min=self.eps)
-                pooled = torch.cat([mean, std], dim=-1)
-            else:
-                pooled = mean
-        else:
-            mask = make_seq_mask_like(like=encoder_output, lengths=length, valid_ones=False)
-            encoder_output = encoder_output.masked_fill(mask, 0.0)
-            # [B, D, T] -> [B, D]
-            means = encoder_output.mean(dim=-1)
-            # Re-scale to get padded means
-            means = means * (encoder_output.shape[-1] / length).unsqueeze(-1)
-            if self.pool_mode == "xvector":
-                correction = 1 if self.unbiased else 0
-                stds = (
-                    encoder_output.sub(means.unsqueeze(-1))
-                    .masked_fill(mask, 0.0)
-                    .pow(2.0)
-                    .sum(-1)  # [B, D, T] -> [B, D]
-                    .div(length.view(-1, 1).sub(correction))
-                    .clamp(min=self.eps)
-                    .sqrt()
-                )
-                pooled = torch.cat((means, stds), dim=-1)
-            else:
-                pooled = means
-        return pooled
-
-
-class AttentivePoolLayer(nn.Module):
-    """
-    Attention pooling layer for pooling speaker embeddings
-    Reference: ECAPA-TDNN Embeddings for Speaker Diarization (https://arxiv.org/pdf/2104.01466.pdf)
-    inputs:
-        inp_filters: input feature channel length from encoder
-        attention_channels: intermediate attention channel size
-        kernel_size: kernel_size for TDNN and attention conv1d layers (default: 1)
-        dilation: dilation size for TDNN and attention conv1d layers  (default: 1)
-    """
-
-    def __init__(
-        self,
-        inp_filters: int,
-        attention_channels: int = 128,
-        kernel_size: int = 1,
-        dilation: int = 1,
-        eps: float = 1e-10,
-    ):
-        super().__init__()
-
-        self.feat_in = 2 * inp_filters
-
-        self.attention_layer = nn.Sequential(
-            TDNNModule(inp_filters * 3, attention_channels, kernel_size=kernel_size, dilation=dilation),
-            nn.Tanh(),
-            nn.Conv1d(
-                in_channels=attention_channels,
-                out_channels=inp_filters,
-                kernel_size=kernel_size,
-                dilation=dilation,
-            ),
-        )
-        self.eps = eps
-
-    def forward(self, x, length=None):
-        max_len = x.size(2)
-
-        if length is None:
-            length = torch.ones(x.shape[0], device=x.device)
-
-        mask, num_values = lens_to_mask(length, max_len=max_len, device=x.device)
-
-        # encoder statistics
-        mean, std = get_statistics_with_mask(x, mask / num_values)
-        mean = mean.unsqueeze(2).repeat(1, 1, max_len)
-        std = std.unsqueeze(2).repeat(1, 1, max_len)
-        attn = torch.cat([x, mean, std], dim=1)
-
-        # attention statistics
-        attn = self.attention_layer(attn)  # attention pass
-        attn = attn.masked_fill(mask == 0, -inf)
-        alpha = F.softmax(attn, dim=2)  # attention values, α
-        mu, sg = get_statistics_with_mask(x, alpha)  # µ and ∑
-
-        # gather
-        return torch.cat((mu, sg), dim=1).unsqueeze(2)
-
-
-class TDNNModule(nn.Module):
+class TdnnModule(nn.Module):
     """
     Time Delayed Neural Module (TDNN) - 1D
     input:
@@ -154,7 +29,8 @@ class TDNNModule(nn.Module):
         out_filters: int,
         kernel_size: int = 1,
         dilation: int = 1,
-        stride: int = 1,
+        stride: int = 1, 
+        groups: int = 1,
         padding: int = None,
     ):
         super().__init__()
@@ -166,6 +42,7 @@ class TDNNModule(nn.Module):
             out_channels=out_filters,
             kernel_size=kernel_size,
             dilation=dilation,
+            groups=groups, 
             padding=padding,
         )
 
@@ -212,19 +89,24 @@ class MaskedSEModule(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(self, input, length=None):
+    def forward(self, inputs, length=None):
+        """
+        inputs: tensor shape of (B, D, T)
+        outputs: tensor shape of (B, D, 1)
+        """
         if length is None:
-            x = torch.mean(input, dim=2, keep_dim=True)
+            x = torch.mean(inputs, dim=2, keep_dim=True)
         else:
-            max_len = input.size(2)
-            mask, num_values = lens_to_mask(length, max_len=max_len, device=input.device)
-            x = torch.sum((input * mask), dim=2, keepdim=True) / (num_values)
-
+            max_len = inputs.size(2)
+            # shape of `mask` is (B, 1, T) and shape of `num_values` is (B, 1, 1)
+            mask, num_values = lens_to_mask(length, max_len=max_len, device=inputs.device)
+            # shape of `x` is (B, D, 1)
+            x = torch.sum((inputs * mask), dim=2, keepdim=True) / (num_values)
         out = self.se_layer(x)
-        return out * input
+        return out * inputs
 
 
-class TDNNSEModule(nn.Module):
+class TdnnSeModule(nn.Module):
     """
     Modified building SE_TDNN group module block from ECAPA implementation for faster training and inference
     Reference: ECAPA-TDNN Embeddings for Speaker Diarization (https://arxiv.org/pdf/2104.01466.pdf)
@@ -260,24 +142,92 @@ class TDNNSEModule(nn.Module):
             groups=group_scale,
         )
         self.group_tdnn_block = nn.Sequential(
-            TDNNModule(inp_filters, out_filters, kernel_size=1, dilation=1),
+            TdnnModule(inp_filters, out_filters, kernel_size=1, dilation=1),
             group_conv,
             nn.ReLU(),
             nn.BatchNorm1d(out_filters),
-            TDNNModule(out_filters, out_filters, kernel_size=1, dilation=1),
+            TdnnModule(out_filters, out_filters, kernel_size=1, dilation=1),
         )
 
         self.se_layer = MaskedSEModule(out_filters, se_channels, out_filters)
 
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
-    def forward(self, input, length=None):
-        x = self.group_tdnn_block(input)
+    def forward(self, inputs, length=None):
+        x = self.group_tdnn_block(inputs)
         x = self.se_layer(x, length)
-        return x + input
+        return x + inputs
+
+
+class Res2NetBlock(nn.Module):
+    """
+    Res2Net module that splits input channels into groups and processes them separately before merging.
+    This allows multi-scale feature extraction.
+    """
+    def __init__(self, in_channels, out_channels, scale=4, kernel_size=1, dilation=1):
+        super().__init__()
+        assert in_channels % scale == 0, "in_channels must be divisible by scale"
+        
+        self.scale = scale
+        self.width = in_channels // scale  # Number of channels per group
+        
+        self.convs = nn.ModuleList([
+            nn.Conv1d(self.width, self.width, kernel_size=kernel_size, dilation=dilation, padding=dilation, bias=False)
+            for _ in range(scale - 1)
+        ])
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        """
+        x: [B, C, T]
+        """
+        splits = torch.split(x, self.width, dim=1)
+        outputs = [splits[0]]  # First part remains unchanged
+
+        for i in range(1, self.scale):
+            conv_out = self.convs[i - 1](splits[i])  # Apply convolution on each group
+            outputs.append(conv_out + outputs[i - 1])  # Hierarchical aggregation
+
+        out = torch.cat(outputs, dim=1)  # Merge groups
+        return self.activation(self.bn(out))
+
+
+class TdnnSeRes2NetModule(nn.Module):
+    """
+    SE-TDNN module with Res2Net for ECAPA-TDNN.
+    """
+    def __init__(
+        self,
+        inp_filters: int,
+        out_filters: int,
+        group_scale: int = 1,
+        se_channels: int = 128,
+        kernel_size: int = 1,
+        dilation: int = 1,
+        res2net_scale: int = 8,  # New Res2Net parameter
+    ):
+        super().__init__()
+
+        # First TDNN layer
+        self.tdnn1 = TdnnModule(inp_filters, out_filters, kernel_size=1, dilation=1, groups=group_scale)
+
+        # Res2Net block replaces grouped TDNN
+        self.res2net = Res2NetBlock(out_filters, out_filters, scale=res2net_scale, kernel_size=kernel_size, dilation=dilation)
+
+        # Squeeze-and-Excite module
+        self.se_layer = MaskedSEModule(out_filters, se_channels, out_filters)
+
+    def forward(self, x, length=None):
+        residual = x
+        x = self.tdnn1(x)
+        x = self.res2net(x)  # Apply Res2Net block
+        x = self.se_layer(x, length)
+        return x + residual  # Residual connection
 
 
 class MaskedConv1d(nn.Module):
+    
     __constants__ = ["use_conv_mask", "real_out_channels", "heads"]
 
     def __init__(

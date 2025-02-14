@@ -12,8 +12,22 @@ from transformers.utils import ModelOutput
 from .configuration_xvector import XVectorConfig
 from .audio_processing import AudioToMelSpectrogramPreprocessor
 from .audio_processing import SpectrogramAugmentation
-from .conv_asr import XVectorEncoder, SpeakerDecoder
-from .angular_loss import AdditiveMarginSoftmaxLoss, AdditiveAngularMarginSoftmaxLoss
+from .conv_asr import SpeakerDecoder
+from .speechbrain.xvector_encoder import XVectorEncoder as SpeechBrainXVectorEncoder
+from .wespeaker.xvector_encoder import XVectorEncoder as WeSpeakerXVectorEncoder
+from .transformers.xvector_encoder import XVectorEncoder as TransformersXVectorEncoder
+from .angular_loss import (
+    NeMoArcFaceLoss, 
+    SpeechBrainArcFaceLoss, 
+    CosFaceLoss, 
+    ArcFaceLoss, 
+    SphereFaceLoss, 
+    AdaCosLoss, 
+    PadeArcFaceLoss, 
+    TaylorArcFaceLoss, 
+    ChebyshevArcFaceLoss,
+    BhaskaraArcFaceLoss
+)
 
 
 @dataclass
@@ -78,9 +92,37 @@ class XVectorModel(XVectorPreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        self.preprocessor = AudioToMelSpectrogramPreprocessor(**config.mel_spectrogram_config)
-        self.spec_augment = SpectrogramAugmentation(**config.spectrogram_augmentation_config)
-        self.encoder = XVectorEncoder(**config.encoder_config)
+        self.preprocessor = AudioToMelSpectrogramPreprocessor(
+            features=config.features, 
+            sample_rate=config.sample_rate, 
+            window_size=config.window_size, 
+            window_stride=config.window_stride, 
+            n_fft=config.n_fft, 
+        )
+        self.spec_augment = SpectrogramAugmentation(
+            freq_masks=config.freq_masks, 
+            time_masks=config.time_masks, 
+            freq_width=config.freq_width, 
+            time_width=config.time_width, 
+            rect_masks=config.rect_masks, 
+            rect_time=config.rect_time,
+            rect_freq=config.rect_freq, 
+            mask_value=config.mask_value,
+        )
+        
+        if self.config.implementation == 'speechbrain':
+            XVectorEncoder = SpeechBrainXVectorEncoder
+        elif self.config.implementation == 'wespeaker':
+            XVectorEncoder = WeSpeakerXVectorEncoder
+        elif self.config.implementation == 'transformers':
+            XVectorEncoder = TransformersXVectorEncoder
+
+        self.encoder = XVectorEncoder(
+            features=config.features, 
+            filters=config.filters, 
+            kernel_sizes=config.kernel_sizes, 
+            dilations=config.dilations, 
+        )
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -107,18 +149,77 @@ class XVectorModel(XVectorPreTrainedModel):
 
 class XVectorForSequenceClassification(XVectorPreTrainedModel):
 
-    def __init__(self, config: XVectorConfig):
+    def __init__(self, config: XVectorConfig, fp16: bool = False):
         super().__init__(config)
 
         self.xvector = XVectorModel(config)
-        self.classifier = SpeakerDecoder(**config.decoder_config)
+        self.classifier = SpeakerDecoder(
+            feat_in=config.filters[-1], 
+            num_classes=config.num_labels, 
+            emb_sizes=config.emb_sizes, 
+            pool_mode=config.pool_mode, 
+            angular=config.angular, 
+            attention_channels=config.attention_channels, 
+            init_mode=config.init_mode, 
+        )
 
-        if config.objective == 'additive_angular_margin':
-            self.loss_fct = AdditiveAngularMarginSoftmaxLoss(**config.objective_config)
-        elif config.objective == 'additive_margin':
-            self.loss_fct = AdditiveMarginSoftmaxLoss(**config.objective_config)
+        if config.objective in ['additive_angular_margin', 'arc_face']:
+            self.loss_fct = ArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin, 
+            )
+        elif config.objective in ['nemo_arc_face']:
+            self.loss_fct = NeMoArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin, 
+            )
+        elif config.objective in ['speechbrain_arc_face']:
+            self.loss_fct = SpeechBrainArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin, 
+                dtype=(torch.float16 if fp16 else torch.float32)
+            )
+        elif config.objective in ['additive_margin', 'cos_face']:
+            self.loss_fct = CosFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin, 
+            )
+        elif config.objective in ['multiplicative_angular_margin', 'sphere_face']:
+            self.loss_fct = SphereFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin, 
+            )
+        elif config.objective in ['adaptive_margin', 'ada_cos']:
+            self.loss_fct = AdaCosLoss(
+                initial_scale=config.angular_scale, 
+            )
+        elif config.objective in ['pade_arc_face']:
+            self.loss_fct = PadeArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                fp16=fp16, 
+            )
+        elif config.objective in ['taylor_arc_face']:
+            self.loss_fct = TaylorArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                n_terms=10, 
+            )
+        elif config.objective in ['chebyshev_arc_face']:
+            self.loss_fct = ChebyshevArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                n_terms=10, 
+            )
+        elif config.objective in ['bhaskara_arc_face']:
+            self.loss_fct = BhaskaraArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+            )
         elif config.objective == 'cross_entropy':
-            self.loss_fct = nn.CrossEntropyLoss(**config.objective_config)
+            self.loss_fct = nn.CrossEntropyLoss(
+                label_smoothing=config.label_smoothing
+            )
 
         self.init_weights()
 
