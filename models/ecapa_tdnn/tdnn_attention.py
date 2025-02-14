@@ -214,16 +214,21 @@ class MaskedSEModule(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(self, input, length=None):
+    def forward(self, inputs, length=None):
+        """
+        inputs: tensor shape of (B, D, T)
+        outputs: tensor shape of (B, D, 1)
+        """
         if length is None:
-            x = torch.mean(input, dim=2, keep_dim=True)
+            x = torch.mean(inputs, dim=2, keep_dim=True)
         else:
-            max_len = input.size(2)
-            mask, num_values = lens_to_mask(length, max_len=max_len, device=input.device)
-            x = torch.sum((input * mask), dim=2, keepdim=True) / (num_values)
-
+            max_len = inputs.size(2)
+            # shape of `mask` is (B, 1, T) and shape of `num_values` is (B, 1, 1)
+            mask, num_values = lens_to_mask(length, max_len=max_len, device=inputs.device)
+            # shape of `x` is (B, D, 1)
+            x = torch.sum((inputs * mask), dim=2, keepdim=True) / (num_values)
         out = self.se_layer(x)
-        return out * input
+        return out * inputs
 
 
 class TdnnSeModule(nn.Module):

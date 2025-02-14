@@ -17,6 +17,7 @@ try:
 except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
+from .logging import logger
 from .module import NeuralModule
 from .features import FilterbankFeatures, FilterbankFeaturesTA
 from .spectrogram_augment import SpecCutout, SpecAugment
@@ -183,7 +184,8 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
 
         # Given the long and similar argument list, point to the class and instantiate it by reference
         if not use_torchaudio:
-            featurizer_class = FilterbankFeatures
+            logger.info(f'Currently only supports `FilterbankFeatures` with torchaudio')
+            featurizer_class = FilterbankFeaturesTA
         else:
             featurizer_class = FilterbankFeaturesTA
         self.featurizer = featurizer_class(
