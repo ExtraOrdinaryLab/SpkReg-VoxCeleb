@@ -1,0 +1,4 @@
+rich
+scikit-learn
+librosa
+gpustat
