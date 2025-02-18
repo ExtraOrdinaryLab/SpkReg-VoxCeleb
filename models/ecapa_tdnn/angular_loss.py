@@ -181,24 +181,56 @@ class ArcFaceLoss(nn.Module):
         self.margin = margin
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        dtype = logits.dtype
-
         # Extract the logits corresponding to the true class
         # Convert sensitive calculations to float32 before applying fp16
         cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
-        theta_target = torch.acos(cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)).float()
-        numerator = (self.scale * torch.cos(theta_target + self.margin)).float()
+        # cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        theta_target = torch.acos(cos_theta_target)
+        numerator = (self.scale * torch.cos(theta_target + self.margin))
         # Exclude the target logits from denominator calculation
         cos_theta_others = torch.cat(
             [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
         )
-        max_logit = (self.scale * cos_theta_others).float().clamp(max=80.0) # Prevent large values
-        denominator = torch.exp(numerator.float().clamp(max=80.0)) + torch.sum(torch.exp(max_logit), dim=1)
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
         # Compute final loss
         L = numerator - torch.log(denominator)
         # convert back to fp16 at the end:
-        loss = -torch.mean(L).to(dtype=dtype)
+        loss = -torch.mean(L)
         return loss
+
+
+class LinearArcFaceLoss(Loss):
+    """Computes Linear ArcFace Loss
+    
+    Paper: Airface: Lightweight and efficient model for face recognition (ICCV'19 Workshop)
+    
+    Args:
+    scale: scale value for cosine angle
+    margin: margin value added to cosine angle 
+    """
+
+    def __init__(self, scale=64.0, margin=0.4):
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        # Extract the logits corresponding to the true class
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        # cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        theta_target = torch.acos(cos_theta_target)
+        numerator = self.scale * (torch.pi - 2 * (theta_target + self.margin)) / torch.pi
+        # Exclude the target logits from denominator calculation
+        cos_theta_others = torch.cat(
+            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
+        )
+        # cos_theta_others = cos_theta_others.clamp(-1.0 + self.eps, 1 - self.eps)
+        logits_others = (torch.pi - 2 * torch.acos(cos_theta_others)) / torch.pi
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * logits_others), dim=1)
+        # Compute final loss
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
 
 
 class AdaCosLoss(Loss):

@@ -4,69 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .logging import logger
 from .module import NeuralModule
-from .tdnn_attention import (
-    StatsPoolLayer, 
-    AttentivePoolLayer, 
-    ChannelDependentAttentiveStatisticsPoolLayer, 
-    TdnnModule, 
-    TdnnSeModule, 
-    TdnnSeRes2NetModule, 
-    init_weights
-)
-from .ecapa2 import LFEEncoder, GFEEncoder
-
-
-class Ecapa2Encoder(NeuralModule):
-
-    def __init__(
-        self, 
-        feat_in: int = 256, 
-        lfe_filters: list = [164, 164, 164, 192, 192], 
-        lfe_strides: list = [(1, 1), (2, 1), (2, 1), (2, 1), (2, 1)], 
-        lfe_blocks: list = [3, 4, 4, 4, 5], 
-        gfe_filters: list = [1024, 1024, 1024, 1024, 1536], 
-        gfe_kernel_sizes: list = [1, 1, 3, 1, 1], 
-        res2net_scale: int = 8, 
-        init_mode: str = 'xavier_uniform',
-    ):
-        super().__init__()
-        self.feat_in = feat_in
-        self.filters = lfe_filters
-        self.strides = lfe_strides
-
-        self.lfe_module = LFEEncoder(
-            feat_in=1, 
-            filters=lfe_filters, 
-            strides=lfe_strides, 
-            blocks=lfe_blocks, 
-        )
-        gfe_height, gfe_width = self.get_gfe_input_shape()
-        self.gfe_module = GFEEncoder(
-            in_channels=gfe_height*gfe_width, 
-            filters=gfe_filters, 
-            kernel_sizes=gfe_kernel_sizes, 
-            scale=res2net_scale
-        )
-
-        self.apply(lambda x: init_weights(x, mode=init_mode))
-
-    def get_gfe_input_shape(self):
-        height = self.feat_in
-        for stride in self.strides:
-            if isinstance(stride, tuple) or isinstance(stride, list):
-                stride = stride[0]
-            height = height // stride
-        width = self.filters[-1]
-        return height, width
-
-    def forward(self, audio_signal: torch.Tensor, length: torch.Tensor = None):
-        # Figure 5 from https://arxiv.org/pdf/2401.08342v1
-        x = audio_signal
-        x = x.unsqueeze(dim=1) # (B, 1, 256, T)
-        x = self.lfe_module(x, length) # (B, 16, 192, T)
-        x = self.gfe_module(x, length) # (B, 1536, T)
-        return x, length
+from .tdnn_attention import init_weights
+from .pool_layer import StatsPoolLayer, AttentivePoolLayer
 
 
 class SpeakerDecoder(NeuralModule):
@@ -101,6 +42,8 @@ class SpeakerDecoder(NeuralModule):
     ):
         super().__init__()
         self.angular = angular
+        logger.info(f'Angular is set to {self.angular}')
+
         self.emb_id = 2
         bias = False if self.angular else True
         emb_sizes = [emb_sizes] if type(emb_sizes) is int else emb_sizes
@@ -112,11 +55,6 @@ class SpeakerDecoder(NeuralModule):
             affine_type = 'linear'
         elif self.pool_mode == 'attention':
             self._pooling = AttentivePoolLayer(inp_filters=feat_in, attention_channels=attention_channels)
-            affine_type = 'conv'
-        elif self.pool_mode == 'ecapa2':
-            self._pooling = ChannelDependentAttentiveStatisticsPoolLayer(
-                inp_filters=feat_in, attention_channels=attention_channels
-            )
             affine_type = 'conv'
 
         shapes = [self._pooling.feat_in]
@@ -166,10 +104,10 @@ class SpeakerDecoder(NeuralModule):
 
         pool = pool.squeeze(-1)
         if self.angular:
-            for W in self.final.parameters():
-                W = F.normalize(W, p=2, dim=1)
+            W = F.normalize(self.final.weight, p=2, dim=1)
             pool = F.normalize(pool, p=2, dim=1)
-
-        out = self.final(pool)
+            out = F.linear(pool, W)
+        else:
+            out = self.final(pool)
 
         return out, embs[-1].squeeze(-1)
