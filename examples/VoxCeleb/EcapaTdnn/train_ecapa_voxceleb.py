@@ -16,13 +16,19 @@ from tqdm import tqdm
 from rich import print
 from sklearn.metrics import accuracy_score
 
+import torch
+import torch.nn as nn
 import transformers
 from transformers import (
     HfArgumentParser,
     Trainer,
     TrainingArguments,
+    TrainerCallback, 
+    TrainerState, 
+    TrainerControl, 
     set_seed,
 )
+from transformers.trainer import _is_peft_model
 from transformers.trainer_utils import get_last_checkpoint, EvalPrediction
 from transformers.utils import send_example_telemetry
 from datasets import load_dataset, Audio, ClassLabel, Features, Value
@@ -35,6 +41,114 @@ from models.ecapa_tdnn.modeling_ecapa_tdnn import EcapaTdnnForSequenceClassifica
 ConfigClass = EcapaTdnnConfig
 FeatureExtractorClass = EcapaTdnnFeatureExtractor
 ModelClass = EcapaTdnnForSequenceClassification
+
+
+class CustomTrainer(Trainer):
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        # return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
+        if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+        if self.model_accepts_loss_kwargs:
+            loss_kwargs = {}
+            if num_items_in_batch is not None:
+                loss_kwargs["num_items_in_batch"] = num_items_in_batch
+            inputs = {**inputs, **loss_kwargs}
+        outputs = model(**inputs)
+
+        if self.is_in_train:
+            logits_logging_file = os.path.join(self.args.output_dir, "true_class_logits.json")
+            os.makedirs(os.path.dirname(logits_logging_file), exist_ok=True)
+            if os.path.exists(logits_logging_file):
+                try:
+                    with open(logits_logging_file, "r") as f:
+                        data = json.load(f)
+                        if not isinstance(data, dict):  # Ensure valid JSON structure
+                            data = {}
+                except (json.JSONDecodeError, ValueError):
+                    print("Corrupt JSON detected. Resetting log file.")
+                    data = {}  # Reset file if it's corrupted
+            else:
+                data = {}  # Initialize if the file does not exist
+            true_class_logits: torch.Tensor = outputs.logits.gather(1, inputs.labels.unsqueeze(1)).squeeze(1)
+            data[self.state.global_step] = true_class_logits.tolist()
+            with open(logits_logging_file, "w") as f:
+                json.dump(data, f, indent=4)
+
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if labels is not None:
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if _is_peft_model(unwrapped_model):
+                model_name = unwrapped_model.base_model.model._get_name()
+            else:
+                model_name = unwrapped_model._get_name()
+            # User-defined compute_loss function
+            if self.compute_loss_func is not None:
+                loss = self.compute_loss_func(outputs, labels, num_items_in_batch=num_items_in_batch)
+            else:
+                loss = self.label_smoother(outputs, labels)
+        else:
+            if isinstance(outputs, dict) and "loss" not in outputs:
+                raise ValueError(
+                    "The model did not return a loss from the inputs, only the following keys: "
+                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+                )
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+        if self.args.average_tokens_across_devices and self.model_accepts_loss_kwargs:
+            loss *= self.accelerator.num_processes
+
+        return (loss, outputs) if return_outputs else loss
+
+
+class GradientCallback(TrainerCallback):
+
+    def __init__(self, norm_type: float = 2.0):
+        super().__init__()
+        self.norm_type = float(norm_type)
+
+    def on_optimizer_step(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        model: nn.Module = kwargs["model"]
+
+        # Compute gradient norms
+        grads = {
+            n: p.grad.norm(self.norm_type).item() for n, p in model.named_parameters() if p.grad is not None
+        }
+
+        # Skip logging if no gradients are available
+        if not grads:
+            print(f"No gradients found at step {state.global_step}. Skipping logging.")
+            return
+
+        gradient_logging_file = os.path.join(args.output_dir, "gradient_norms.json")
+
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(gradient_logging_file), exist_ok=True)
+
+        # Try reading existing data
+        if os.path.exists(gradient_logging_file):
+            try:
+                with open(gradient_logging_file, "r") as f:
+                    data = json.load(f)
+                    if not isinstance(data, dict):  # Ensure valid JSON structure
+                        data = {}
+            except (json.JSONDecodeError, ValueError):
+                print("Corrupt JSON detected. Resetting log file.")
+                data = {}  # Reset file if it's corrupted
+        else:
+            data = {}  # Initialize if the file does not exist
+
+        # Update dictionary and save back to file
+        data[state.global_step] = grads
+        with open(gradient_logging_file, "w") as f:
+            json.dump(data, f, indent=4)
 
 
 @dataclass
@@ -421,13 +535,14 @@ def main():
         raw_datasets["predict"].set_transform(val_transforms, output_all_columns=False)
 
     # Initialize our trainer
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=raw_datasets["train"] if training_args.do_train else None,
         eval_dataset=raw_datasets["eval"] if training_args.do_eval else None,
         compute_metrics=compute_metrics,
         processing_class=feature_extractor,
+        callbacks=[GradientCallback()]
     )
 
     # Training
