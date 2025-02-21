@@ -41,7 +41,7 @@ class SphereFaceLoss(Loss):
     margin: angular margin multiplied with cosine angle
     """
 
-    def __init__(self, scale=30.0, margin=1.35):
+    def __init__(self, scale=32.0, margin=1.6):
         super().__init__()
         self.eps = 1e-7
         self.scale = scale
@@ -51,12 +51,80 @@ class SphereFaceLoss(Loss):
         # Extract the logits corresponding to the true class
         cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
         theta_target = torch.acos(cos_theta_target.clamp(-1.0 + self.eps, 1.0 - self.eps))
-        numerator = self.scale * torch.cos(self.margin * theta_target)
+        k = torch.floor(self.margin * theta_target / torch.pi)
+        sign = torch.where((k % 2) == 0, 1.0, -1.0)
+        numerator = self.scale * (sign * torch.cos(self.margin * theta_target) - 2.0 * k)
         # Exclude the target logits from denominator calculation
         cos_theta_others = torch.cat(
             [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
         )
         denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        # Compute final loss
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
+class SphereFaceRV1Loss(Loss):
+    """Computes Multiplicative Angular Margin Softmax (SphereFace) Loss
+    
+    Paper: SphereFace Revived: Unifying Hyperspherical Face Recognition (TPAMI'22)
+
+    args:
+    scale: scale value for cosine angle
+    margin: angular margin multiplied with cosine angle
+    """
+
+    def __init__(self, scale=32.0, margin=1.6):
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        # Extract the logits corresponding to the true class
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        theta_target = torch.acos(cos_theta_target.clamp(-1.0 + self.eps, 1.0 - self.eps))
+        modified_margin = torch.where(
+            self.margin < (torch.pi / theta_target), self.margin, torch.pi / theta_target
+        )
+        numerator = self.scale * torch.cos(modified_margin * theta_target)
+        # Exclude the target logits from denominator calculation
+        cos_theta_others = torch.cat(
+            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
+        )
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        # Compute final loss
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
+class SphereFaceRV2Loss(Loss):
+    """Computes Multiplicative Angular Margin Softmax (SphereFace) Loss
+    
+    Paper: SphereFace Revived: Unifying Hyperspherical Face Recognition (TPAMI'22)
+
+    args:
+    scale: scale value for cosine angle
+    margin: angular margin multiplied with cosine angle
+    """
+
+    def __init__(self, scale=32.0, margin=1.6):
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        # Extract the logits corresponding to the true class
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        numerator = self.scale * cos_theta_target
+        # Exclude the target logits from denominator calculation
+        cos_theta_others = torch.cat(
+            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
+        )
+        theta_others = torch.acos(cos_theta_others.clamp(-1.0 + self.eps, 1.0 - self.eps))
+        modified_cos_theta_others = torch.cos(theta_others / self.margin)
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * modified_cos_theta_others), dim=1)
         # Compute final loss
         L = numerator - torch.log(denominator)
         return -torch.mean(L)
