@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Define the source and target base directories
-SRC_DIR="/mnt/data1_HDD_14TB/yang/corpus/audio/VoxCeleb2/test/aac"
-DEST_DIR="/mnt/data1_HDD_14TB/yang/corpus/audio/VoxCeleb2/test/wav"
+SRC_DIR="/path/to/VoxCeleb2/test/aac"
+DEST_DIR="/path/to/VoxCeleb2/test/wav"
 
 # Find all .m4a files and process them
 find "$SRC_DIR" -type f -name "*.m4a" | while read -r src_file; do
