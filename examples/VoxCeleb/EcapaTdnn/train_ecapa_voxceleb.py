@@ -9,7 +9,7 @@ from pathlib import Path
 from random import randint
 from functools import partial
 from dataclasses import dataclass, field
-from typing import List, Callable, Any, Optional
+from typing import List, Callable, Any, Optional, Dict
 
 import numpy as np
 from tqdm import tqdm
@@ -471,9 +471,11 @@ def main():
     raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
     
     if 'validation' in raw_datasets:
-        raw_datasets["validation"].set_transform(val_transforms, output_all_columns=False)
+        raw_datasets["validation"].set_transform(train_transforms, output_all_columns=False)
+        logger.info("Set `train_transforms` for validation set.")
     if 'test' in raw_datasets:
         raw_datasets["test"].set_transform(val_transforms, output_all_columns=False)
+        logger.info("Set `val_transforms` for test set.")
     logger.info("Datasets transformed successfully.")
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
