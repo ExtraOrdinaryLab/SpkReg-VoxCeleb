@@ -1,9 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
 rich
 scikit-learn
 librosa
 gpustat
+wandb
 matplotlib
 transformers
 accelerate
 datasets
 evaluate
+torch==2.0.0
+torchvision==0.15.1
+torchaudio==2.0.1
+nvidia-cublas-cu11
+nvidia-cudnn-cu11
