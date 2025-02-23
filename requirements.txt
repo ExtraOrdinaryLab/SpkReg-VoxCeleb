@@ -2,3 +2,8 @@ rich
 scikit-learn
 librosa
 gpustat
+matplotlib
+transformers
+accelerate
+datasets
+evaluate
