@@ -29,6 +29,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("--eval_file", default=None, nargs='+', help="")
     parser.add_argument("--model_name_or_path", type=str, default=None, help="")
+    parser.add_argument("--output_dir", type=str, default=None, help="")
     parser.add_argument("--trial_file", nargs='+', help="")
     parser.add_argument("--device", type=str, default='cuda:0', help="")
     parser.add_argument("--trust_remote_code", action="store_true", help="")
@@ -153,7 +154,7 @@ def main(args):
             trial_list = [line.strip().split() for line in f]
         trial_list = [(int(parts[0]), parts[1], parts[2]) for parts in trial_list]
     
-        positive_scores, negative_scores = [], []
+        positive_scores, negative_scores, trial_scores = [], [], []
         for parts in tqdm(trial_list, desc='Trial'):
             label, enrol_filename, test_filename = parts
             enrol_embedding = filename2embedding[enrol_filename]
@@ -166,8 +167,22 @@ def main(args):
             else:
                 negative_scores.append(score)
 
-        eer = eer_score(positive_scores, negative_scores, return_threshold=False)
-        mindcf = mindcf_score(positive_scores, negative_scores, p_target=0.01, c_miss=1.0, c_fa=1.0, return_threshold=False)
+            trial_scores.append((score, enrol_filename, test_filename))
+
+        eer, eer_threshold = eer_score(positive_scores, negative_scores, return_threshold=True)
+        mindcf, mindcf_threshold = mindcf_score(positive_scores, negative_scores, p_target=0.01, c_miss=1.0, c_fa=1.0, return_threshold=True)
+
+        with open(os.path.join(args.output_dir, 'verification_results.json'), "w") as f:
+            result = {
+                'eer': {'value': eer, 'threshold': eer_threshold}, 
+                'mindcf': {'value': mindcf, 'threshold': mindcf_threshold}, 
+            }
+            json.dump(result, f, indent=4)
+
+        with open(os.path.join(args.output_dir, 'trial_scores.txt'), "w") as f:
+            for data_point in trial_scores:
+                score, enrol_filename, test_filename = data_point
+                f.write(f'{score}\t{enrol_filename}\t{test_filename}\n')
         
         logger.info(f"{trial_name}: EER = {eer:.6f}, minDCF = {mindcf:.6f}")
 

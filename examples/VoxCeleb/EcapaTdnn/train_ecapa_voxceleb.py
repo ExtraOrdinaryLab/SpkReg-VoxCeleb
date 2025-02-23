@@ -467,28 +467,25 @@ def main():
         output_batch = {model_input_name: inputs.get(model_input_name)}
         output_batch["labels"] = list(batch['label'])
         return output_batch
-    
-    raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
-    
-    if 'validation' in raw_datasets:
-        raw_datasets["validation"].set_transform(train_transforms, output_all_columns=False)
-        logger.info("Set `train_transforms` for validation set.")
-    if 'test' in raw_datasets:
-        raw_datasets["test"].set_transform(val_transforms, output_all_columns=False)
-        logger.info("Set `val_transforms` for test set.")
-    logger.info("Datasets transformed successfully.")
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
     def compute_metrics(eval_pred: EvalPrediction):
         """Computes accuracy on a batch of predictions"""
-        logits, labels = eval_pred
-        if isinstance(logits, tuple):
-            logits = logits[0]
-        predictions = np.argmax(logits, axis=-1)  # Convert logits to class indices
+        predictions, labels = eval_pred
         return {
             "accuracy": accuracy_score(labels, predictions)
         }
+    
+    def preprocess_logits_for_metrics(logits, labels):
+        """
+        Original Trainer may have a memory leak. 
+        This is a workaround to avoid storing too many tensors that are not needed.
+        """
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        pred_ids = torch.argmax(logits, dim=1)
+        return pred_ids
 
     config = ConfigClass.from_pretrained(
         model_args.config_name, 
@@ -528,7 +525,7 @@ def main():
                 raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
         # Set the validation transforms
-        raw_datasets["eval"].set_transform(val_transforms, output_all_columns=False)
+        raw_datasets["eval"].set_transform(train_transforms, output_all_columns=False)
 
     if training_args.do_predict:
         if data_args.predict_split_name == 'validation':
@@ -545,6 +542,7 @@ def main():
         train_dataset=raw_datasets["train"] if training_args.do_train else None,
         eval_dataset=raw_datasets["eval"] if training_args.do_eval else None,
         compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         processing_class=feature_extractor,
         callbacks=[GradientCallback()]
     )
