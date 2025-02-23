@@ -2,6 +2,10 @@ import math
 
 import mpmath
 import numpy as np
+import sympy as sp
+from scipy.special import comb
+from scipy.optimize import minimize
+from scipy.interpolate import pade as scipy_pade
 
 import torch
 import torch.nn as nn
@@ -305,274 +309,335 @@ class QamFace(Loss):
         return loss.mean()
 
 
-def compute_pade_coefficients(func, order):
-    """
-    Computes Padé approximant coefficients for a given function.
-
-    Args:
-        func: The function to approximate (mpmath function).
-        order: Tuple (m, n) for the Padé approximant (degree of numerator, denominator).
-
-    Returns:
-        Tuple of lists (p_coeffs, q_coeffs) for numerator and denominator polynomials.
-    """
-    mpmath.mp.dps = 50  # High precision for coefficient computation
-    taylor_series = mpmath.taylor(func, 0, sum(order))  # Compute Maclaurin series
-    p, q = mpmath.pade(taylor_series, order[0], order[1])  # Compute Padé approximant
-    p, q = [float(c) for c in p], [float(c) for c in q]  # Convert to standard float
-    return p, q
+def safe_original_func(u, margin):
+    u_clipped = np.clip(u, -1, 1)
+    return np.cos(np.arccos(u_clipped) + margin)
 
 
-def horner_evaluation(x, coeffs):
-    """
-    Evaluates a polynomial using Horner's method.
-
-    Args:
-        x: The input tensor.
-        coeffs: List of polynomial coefficients (constant term first).
-
-    Returns:
-        Evaluated polynomial value.
-    """
-    result = torch.zeros_like(x, dtype=x.dtype)
-    for coef in reversed(coeffs): # Horner’s method should process from highest-degree term first to lowest.
-        result = result * x + coef
-    return result
-
-
-class PadeCosine(torch.nn.Module):
-
-    def __init__(self, order=(4, 4), dtype=torch.float32):
-        """
-        Constructs a Padé approximant model for cosine.
-
-        Args:
-            order: Tuple specifying degrees of numerator and denominator.
-            dtype: Data type (float32 or float16).
-        """
-        super().__init__()
-        p_coeffs, q_coeffs = compute_pade_coefficients(mpmath.cos, order)
-        logger.info("Padé approximant for cosine: ")
-        logger.info(f"P = {p_coeffs}")
-        logger.info(f"Q = {q_coeffs}")
-
-        # Convert coefficients to PyTorch tensors
-        # self.p_coeffs = torch.tensor(p_coeffs, dtype=dtype)
-        # self.q_coeffs = torch.tensor(q_coeffs, dtype=dtype)
-        self.register_buffer('p_coeffs', torch.tensor(p_coeffs, dtype=dtype))
-        self.register_buffer('q_coeffs', torch.tensor(q_coeffs, dtype=dtype))
-
-    def forward(self, x):
-        # Cosine is an even function, meaning it should use x^2 for stability
-        x2 = x * x
-        x2 = x2.clamp(-1 + 1e-6, 1 - 1e-6) # Fix: Prevent instability
-        num = horner_evaluation(x, self.p_coeffs)
-        denom = horner_evaluation(x, self.q_coeffs)
-        return num / denom
-
-class PadeArccos(torch.nn.Module):
-
-    def __init__(self, order=(4, 4), dtype=torch.float32):
-        """
-        Constructs a Padé approximant model for arccosine.
-
-        Args:
-            order: Tuple specifying degrees of numerator and denominator.
-            dtype: Data type (float32 or float16).
-        """
-        super().__init__()
-        p_coeffs, q_coeffs = compute_pade_coefficients(mpmath.acos, order)
-        logger.info("Padé approximant for arccosine: ")
-        logger.info(f"P = {p_coeffs}")
-        logger.info(f"Q = {q_coeffs}")
-
-        # Convert coefficients to PyTorch tensors
-        # self.p_coeffs = torch.tensor(p_coeffs, dtype=dtype)
-        # self.q_coeffs = torch.tensor(q_coeffs, dtype=dtype)
-        self.register_buffer('p_coeffs', torch.tensor(p_coeffs, dtype=dtype))
-        self.register_buffer('q_coeffs', torch.tensor(q_coeffs, dtype=dtype))
-
-    def forward(self, x):
-        x = x.clamp(-1 + 1e-6, 1 - 1e-6)  # Fix: Prevent instability
-        num = horner_evaluation(x, self.p_coeffs)
-        denom = horner_evaluation(x, self.q_coeffs)
-        return num / denom
-
-
-class PadeArcFaceLoss(Loss):
-    """Computes Additive Angular Margin Softmax (ArcFace) Loss using Padé approximants"""
-    
-    def __init__(self, scale=30.0, margin=0.2, fp16=False):
-        super().__init__()
-        self.eps = 1e-7
-        self.scale = scale
-        self.margin = margin
-
-        dtype = torch.float16 if fp16 else torch.float32
-        self.cos_approx = PadeCosine(order=(4, 4), dtype=dtype)
-        self.acos_approx = PadeArccos(order=(4, 4), dtype=dtype)
-        logger.info(f"PadeCosine and PadeArccos use dtype = {dtype}")
-
-    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        # Extract the logits corresponding to the true class
-        cos_theta_target = logits[torch.arange(logits.size(0)), labels]
-        numerator = self.scale * self.cos_approx(self.acos_approx(cos_theta_target) + self.margin)
-        # Exclude the target logits from denominator calculation
-        cos_theta_others = torch.cat(
-            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
-        ) # without masking
-        max_logit = self.scale * cos_theta_others
-        denominator = torch.exp(numerator) + torch.sum(torch.exp(max_logit), dim=1)
-        # Compute final loss
-        L = numerator - torch.log(denominator)
-        return -torch.mean(L)
-
-
-def taylor_cos(x, n_terms=10):
-    """
-    Compute the Taylor series expansion of cos(x) up to n_terms.
-    """
-    result = torch.zeros_like(x)
-    for k in range(n_terms):
-        term = ((-1) ** k) * (x ** (2 * k)) / math.factorial(2 * k)
-        result += term
-    return result
-
-
-def taylor_arccos(x: torch.Tensor, n_terms=10):
-    """
-    Compute the Taylor series expansion of arccos(x) around x=0.
-    """
-    x = x.clamp(-1 + 1e-6, 1 - 1e-6)
-    
-    result = math.pi / 2 * torch.ones_like(x)
-    for k in range(n_terms):
-        coef = math.factorial(2 * k) / (2 ** (2 * k) * (math.factorial(k) ** 2) * (2 * k + 1))
-        term = coef * (x ** (2 * k + 1))
-        result -= term
-    return result
-
-
-class TaylorArcFaceLoss(Loss):
-    """Computes Additive Angular Margin Softmax (ArcFace) Loss using Taylor series expansion"""
-    
-    def __init__(self, scale=30.0, margin=0.2, n_terms=10):
-        super().__init__()
-        self.eps = 1e-7
-        self.scale = scale
-        self.margin = margin
-        self.n_terms = n_terms
-
-    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        # Extract the logits corresponding to the true class
-        cos_theta_target = logits[torch.arange(logits.size(0)), labels]
-        numerator = self.scale * taylor_cos(taylor_arccos(cos_theta_target, self.n_terms) + self.margin, self.n_terms)
-        # Exclude the target logits from denominator calculation
-        cos_theta_others = torch.cat(
-            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
-        ) # without masking
-        max_logit = self.scale * cos_theta_others
-        denominator = torch.exp(numerator) + torch.sum(torch.exp(max_logit), dim=1)
-        # Compute final loss
-        L = numerator - torch.log(denominator)
-        return -torch.mean(L)
-    
-
-def chebyshev_polynomials(x: torch.Tensor, n_terms):
-    """
-    Compute Chebyshev polynomials T_k(x) up to n_terms using recursion.
-    """
-    T = [torch.ones_like(x), x]
-    for k in range(2, n_terms):
-        T_next = 2 * x * T[-1] - T[-2]
-        T.append(T_next)
-    return T
-
-
-def chebyshev_cos(x: torch.Tensor, n_terms=10):
-    """
-    Compute the Chebyshev series expansion of cos(x) up to n_terms.
-    """
-    T = chebyshev_polynomials(x, n_terms)
-    coeffs = [math.cos(k * math.pi / 2) for k in range(n_terms)]
-    result = sum(c * T_k for c, T_k in zip(coeffs, T))
-    return result
-
-
-def chebyshev_arccos(x: torch.Tensor, n_terms=10):
-    """
-    Compute the Chebyshev series expansion of arccos(x) up to n_terms.
-    """
-    x = x.clamp(-1 + 1e-6, 1 - 1e-6)
-    
-    T = chebyshev_polynomials(x, n_terms)
-    coeffs = [math.pi / 2 if k == 0 else (-1)**k * 2 / (k * math.pi) for k in range(1, n_terms)]
-    result = sum(c * T_k for c, T_k in zip([math.pi / 2] + coeffs, T))
-    return result
+def bounded_chebyshev_approximation(func, degree=30, num_samples=1000, margin=0.2):
+    x = np.linspace(-1, 1, num_samples)
+    y = func(x, margin)
+    cheb = np.polynomial.Chebyshev.fit(x, y, degree, domain=[-1, 1])
+    return cheb.coef
 
 
 class ChebyshevArcFaceLoss(Loss):
-    """Computes Additive Angular Margin Softmax (ArcFace) Loss using Chebyshev series expansion"""
-    
-    def __init__(self, scale=30.0, margin=0.2, n_terms=10):
+
+    def __init__(self, scale=30.0, margin=0.2, chebyshev_degree=10):
         super().__init__()
         self.eps = 1e-7
         self.scale = scale
         self.margin = margin
-        self.n_terms = n_terms
+        
+        # Precompute Chebyshev coefficients
+        cheb_coeffs_np = bounded_chebyshev_approximation(
+            safe_original_func, degree=chebyshev_degree, margin=margin
+        )
+        self.register_buffer('coefficients', torch.from_numpy(cheb_coeffs_np).float())
+        
+    def chebyshev_approx(self, x):
+        coeffs = self.coefficients
+        if len(coeffs) == 0:
+            return torch.zeros_like(x)
+        elif len(coeffs) == 1:
+            return coeffs[0] * torch.ones_like(x)
+        elif len(coeffs) == 2:
+            return coeffs[0] + coeffs[1] * x
+        
+        x2 = 2 * x
+        c0 = coeffs[-2].expand_as(x)
+        c1 = coeffs[-1].expand_as(x)
+        
+        for i in range(3, len(coeffs) + 1):
+            tmp = c0
+            c0 = coeffs[-i] - c1
+            c1 = tmp + c1 * x2
+        
+        return c0 + c1 * x
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        # Extract the logits corresponding to the true class
-        cos_theta_target = logits[torch.arange(logits.size(0)), labels]
-        numerator = self.scale * chebyshev_cos(chebyshev_arccos(cos_theta_target, self.n_terms) + self.margin, self.n_terms)
+        # Extract target logits and ensure numerical stability
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        
+        # Compute numerator using Chebyshev approximation
+        numerator = self.scale * self.chebyshev_approx(cos_theta_target)
+        
+        # Exclude target logits from denominator
+        cos_theta_others = torch.cat([
+            torch.cat((logits[i, :y], logits[i, y+1:])).unsqueeze(0) 
+            for i, y in enumerate(labels)
+        ], dim=0)
+        
+        # Compute denominator and loss
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
+def compute_remez_poly(func, interval, degree, num_points=1000):
+    """
+    Compute minimax polynomial approximation using numerical optimization.
+    Implements a simplified Remez-like algorithm using SciPy's minimize.
+    """
+    a, b = interval
+    x = np.linspace(a, b, num_points)
+    y = func(x)
+    
+    # Initial guess using Chebyshev nodes for better stability
+    cheb_nodes = np.cos(np.pi * (2 * np.arange(1, degree+2) - 1) / (2 * (degree+1)))
+    x_cheb = 0.5 * (b - a) * cheb_nodes + 0.5 * (a + b)
+    coeffs_init = np.polyfit(x_cheb, func(x_cheb), degree)
+    
+    # Minimax optimization setup
+    def objective(coeffs):
+        approx = np.polyval(coeffs, x)
+        errors = np.abs(approx - y)
+        return np.max(errors) + 0.1*np.mean(errors)  # Combine max and mean error
+    
+    # Constrained optimization to maintain numerical stability
+    result = minimize(
+        objective,
+        coeffs_init,
+        method='SLSQP',
+        options={'maxiter': 1000, 'ftol': 1e-12},
+        bounds=[(None, None)]*len(coeffs_init)
+    )
+    
+    if not result.success:
+        print("Optimization warning:", result.message)
+    
+    return result.x
+
+
+class RemezArcFaceLoss(nn.Module):
+    """
+    Improved ArcFace loss with minimax polynomial approximation using SciPy optimization.
+    Maintains numerical stability and proper bounding.
+    """
+    def __init__(self, scale=30.0, margin=0.2, remez_degree=6, interval=(-1.0, 1.0)):
+        super(RemezArcFaceLoss, self).__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+        self.interval = interval
+        self.remez_degree = remez_degree
+
+        # Define the target function with numerical safety
+        def f(cos_theta):
+            cos_theta = np.clip(cos_theta, -1+self.eps, 1-self.eps)
+            return cos_theta * np.cos(margin) - np.sqrt(1 - cos_theta**2) * np.sin(margin)
+        
+        # Compute optimized polynomial coefficients
+        self.poly_coeffs = compute_remez_poly(f, interval, remez_degree)
+        
+        # Register as buffer for proper device placement
+        self.register_buffer('coefficients', torch.tensor(self.poly_coeffs, dtype=torch.float32))
+
+    def remez_approx(self, x):
+
+        def _eval_poly(coeffs, x):
+            """
+            Evaluate a polynomial at x given coefficients in descending order.
+            For a polynomial P(x) = a_0*x^n + a_1*x^(n-1) + ... + a_n.
+            """
+            result = torch.zeros_like(x)
+            degree = len(coeffs) - 1
+            for i, coeff in enumerate(coeffs):
+                result = result + coeff * (x ** (degree - i))
+            return result
+        
+        x_clamped = x.clamp(self.interval[0], self.interval[1])
+        return _eval_poly(self.coefficients, x_clamped)
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        # Extract target cosine similarities with numerical safety
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1))[labels]
+        cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        
+        # Apply polynomial approximation
+        approx_target = self.remez_approx(cos_theta_target)
+        
+        # Compute numerator and denominator with stability
+        numerator = self.scale * approx_target
+        
         # Exclude the target logits from denominator calculation
         cos_theta_others = torch.cat(
             [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
-        ) # without masking
-        max_logit = self.scale * cos_theta_others
-        denominator = torch.exp(numerator) + torch.sum(torch.exp(max_logit), dim=1)
+        )
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
         # Compute final loss
         L = numerator - torch.log(denominator)
         return -torch.mean(L)
-    
 
-def bhaskara_cos(x: torch.Tensor):
+
+def safe_target_func(u, margin):
     """
-    Compute Bhaskara's approximation for cos(x).
+    Computes the target function f(u) = cos(arccos(u) + margin),
+    clipping u into [-1, 1] for numerical stability.
     """
-    x = torch.remainder(x, 2 * math.pi)  # Keep x within [0, 2pi]
-    numerator = 16 * (math.pi - x) * x
-    denominator = 5 * math.pi**2 - 4 * x * (math.pi - x)
-    return numerator / denominator
+    u_clipped = np.clip(u, -1, 1)
+    return np.cos(np.arccos(u_clipped) + margin)
 
 
-def bhaskara_arccos(x: torch.Tensor):
+def clenshaw_curtis_chebyshev_coefficients(func, degree=30, num_samples=1000, margin=0.2):
     """
-    Approximate arccos(x) using Bhaskara's method.
+    Computes Chebyshev coefficients using Clenshaw-Curtis nodes.
+    The nodes are given by: x_j = cos(pi * j / (num_samples-1)) for j = 0,...,num_samples-1.
     """
-    x = x.clamp(-1 + 1e-6, 1 - 1e-6)
-    return math.pi / 2 - (x + 0.25 * x**3)
+    j = np.arange(num_samples)
+    x = np.cos(np.pi * j / (num_samples - 1))
+    y = func(x, margin)
+    coeffs = np.polynomial.chebyshev.chebfit(x, y, degree)
+    return coeffs
 
 
-class BhaskaraArcFaceLoss(Loss):
-    """Computes Additive Angular Margin Softmax (ArcFace) Loss using Bhaskara series expansion"""
-    
-    def __init__(self, scale=30.0, margin=0.2):
+class ChebyshevDirectFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, coeffs):
+        """
+        Directly evaluates the Chebyshev series
+            f(x) = sum_{k=0}^{n} coeffs[k] * T_k(x),
+        by computing T_k(x) via the recurrence:
+            T_0(x)=1, T_1(x)=x, T_k(x)=2x*T_{k-1}(x)-T_{k-2}(x) for k>=2.
+        """
+        n = coeffs.shape[0] - 1
+        T = []
+        T0 = torch.ones_like(x)
+        T.append(T0)
+        if n >= 1:
+            T1 = x
+            T.append(T1)
+        for k in range(2, n + 1):
+            T_k = 2 * x * T[k - 1] - T[k - 2]
+            T.append(T_k)
+        # Compute f(x)
+        f = sum(coeffs[k] * T[k] for k in range(n + 1))
+        ctx.save_for_backward(x, coeffs)
+        ctx.n = n
+        return f
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, coeffs = ctx.saved_tensors
+        n = ctx.n
+        # Compute derivative: f'(x) = sum_{k=1}^{n} coeffs[k] * k * U_{k-1}(x)
+        # U_0(x)=1, U_1(x)=2x, U_k(x)=2x*U_{k-1}(x)-U_{k-2}(x) for k>=2.
+        U = []
+        U0 = torch.ones_like(x)
+        U.append(U0)
+        if n >= 1:
+            U1 = 2 * x
+            U.append(U1)
+        for k in range(2, n):
+            U_k = 2 * x * U[k - 1] - U[k - 2]
+            U.append(U_k)
+        derivative = torch.zeros_like(x)
+        for k in range(1, n + 1):
+            derivative = derivative + coeffs[k] * k * U[k - 1]
+        grad_input = grad_output * derivative
+        return grad_input, None
+
+
+class ChebyshevClenshawFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, coeffs):
+        """
+        Evaluates the Chebyshev series using Clenshaw's recurrence:
+            b_k = coeffs[k] + 2*x*b_{k+1} - b_{k+2}, and
+            f(x) = b_0 - x * b_2,
+        iterating from k = n down to 0.
+        """
+        n = coeffs.shape[0] - 1
+        b_kplus1 = torch.zeros_like(x)
+        b_kplus2 = torch.zeros_like(x)
+        x2 = 2 * x
+        for k in range(n, -1, -1):
+            b_k = coeffs[k] + x2 * b_kplus1 - b_kplus2
+            b_kplus2 = b_kplus1
+            b_kplus1 = b_k
+        result = b_k - b_kplus2 * x
+        ctx.save_for_backward(x, coeffs)
+        ctx.n = n
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, coeffs = ctx.saved_tensors
+        n = ctx.n
+        # Use the same derivative expression:
+        # f'(x) = sum_{k=1}^{n} coeffs[k] * k * U_{k-1}(x)
+        U = []
+        U0 = torch.ones_like(x)
+        U.append(U0)
+        if n >= 1:
+            U1 = 2 * x
+            U.append(U1)
+        for k in range(2, n):
+            U_k = 2 * x * U[k - 1] - U[k - 2]
+            U.append(U_k)
+        derivative = torch.zeros_like(x)
+        for k in range(1, n + 1):
+            derivative = derivative + coeffs[k] * k * U[k - 1]
+        grad_input = grad_output * derivative
+        return grad_input, None
+
+
+class ChebyshevV2ArcFaceLoss(Loss):
+
+    def __init__(self, scale=30.0, margin=0.2, chebyshev_degree=30, num_samples=1000, use_clenshaw=True):
+        """
+        Initializes ArcFaceLoss.
+        Precomputes the Chebyshev coefficients to approximate:
+            f(u) = cos(arccos(u) + margin)
+        using Clenshaw-Curtis quadrature. Set use_clenshaw to False
+        to use the direct evaluation method.
+        """
         super().__init__()
         self.eps = 1e-7
         self.scale = scale
         self.margin = margin
-
+        self.use_clenshaw = use_clenshaw
+        
+        # Precompute Chebyshev coefficients using Clenshaw–Curtis nodes
+        cheb_coeffs_np = clenshaw_curtis_chebyshev_coefficients(
+            safe_target_func, degree=chebyshev_degree, num_samples=num_samples, margin=margin
+        )
+        self.register_buffer('coefficients', torch.from_numpy(cheb_coeffs_np).float())
+        
+    def chebyshev_eval(self, x):
+        """
+        Evaluates the Chebyshev approximation using either the direct method
+        or Clenshaw recurrence, along with custom autograd for the derivative.
+        """
+        if self.use_clenshaw:
+            return ChebyshevClenshawFunction.apply(x, self.coefficients)
+        else:
+            return ChebyshevDirectFunction.apply(x, self.coefficients)
+    
     def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        # Extract the logits corresponding to the true class
-        cos_theta_target = logits[torch.arange(logits.size(0)), labels]
-        numerator = self.scale * bhaskara_cos(bhaskara_arccos(cos_theta_target) + self.margin)
-        # Exclude the target logits from denominator calculation
-        cos_theta_others = torch.cat(
-            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
-        ) # without masking
-        max_logit = self.scale * cos_theta_others
-        denominator = torch.exp(numerator) + torch.sum(torch.exp(max_logit), dim=1)
-        # Compute final loss
+        """
+        Computes the ArcFace loss using the Chebyshev approximation.
+        For each sample, the target logit (cosine similarity) is approximated
+        via the Chebyshev function evaluation, scaled, and then compared against
+        the non-target logits.
+        """
+        # Extract target logits and ensure numerical stability
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        
+        # Compute the numerator using the Chebyshev approximation (with custom backward)
+        numerator = self.scale * self.chebyshev_eval(cos_theta_target)
+        
+        # Exclude target logits from the denominator
+        cos_theta_others = torch.cat([
+            torch.cat((logits[i, :y], logits[i, y+1:])).unsqueeze(0)
+            for i, y in enumerate(labels)
+        ], dim=0)
+        
+        # Compute denominator and final loss
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
         L = numerator - torch.log(denominator)
         return -torch.mean(L)
