@@ -21,10 +21,7 @@ from .angular_loss import (
     ArcFaceLoss, 
     SphereFaceLoss, 
     AdaCosLoss, 
-    PadeArcFaceLoss, 
-    TaylorArcFaceLoss, 
-    ChebyshevArcFaceLoss,
-    BhaskaraArcFaceLoss
+    ChebyshevArcFaceLoss
 )
 
 
@@ -192,28 +189,11 @@ class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
             self.loss_fct = AdaCosLoss(
                 initial_scale=config.angular_scale, 
             )
-        elif config.objective in ['pade_arc_face']:
-            self.loss_fct = PadeArcFaceLoss(
-                scale=config.angular_scale, 
-                margin=config.angular_margin,
-                fp16=fp16, 
-            )
-        elif config.objective in ['taylor_arc_face']:
-            self.loss_fct = TaylorArcFaceLoss(
-                scale=config.angular_scale, 
-                margin=config.angular_margin,
-                n_terms=10, 
-            )
         elif config.objective in ['chebyshev_arc_face']:
             self.loss_fct = ChebyshevArcFaceLoss(
                 scale=config.angular_scale, 
                 margin=config.angular_margin,
-                n_terms=10, 
-            )
-        elif config.objective in ['bhaskara_arc_face']:
-            self.loss_fct = BhaskaraArcFaceLoss(
-                scale=config.angular_scale, 
-                margin=config.angular_margin,
+                chebyshev_degree=10, 
             )
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(
