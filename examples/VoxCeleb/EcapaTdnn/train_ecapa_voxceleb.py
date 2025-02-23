@@ -9,7 +9,7 @@ from pathlib import Path
 from random import randint
 from functools import partial
 from dataclasses import dataclass, field
-from typing import List, Callable, Any, Optional
+from typing import List, Callable, Any, Optional, Dict
 
 import numpy as np
 from tqdm import tqdm
@@ -18,6 +18,7 @@ from sklearn.metrics import accuracy_score
 
 import torch
 import torch.nn as nn
+import torch.distributed as torch_dist
 import transformers
 from transformers import (
     HfArgumentParser,
@@ -58,7 +59,7 @@ class CustomTrainer(Trainer):
             inputs = {**inputs, **loss_kwargs}
         outputs = model(**inputs)
 
-        if self.is_in_train:
+        if self.is_in_train and (self.args.local_rank == 0 or not torch_dist.is_initialized()):
             logits_logging_file = os.path.join(self.args.output_dir, "true_class_logits.json")
             os.makedirs(os.path.dirname(logits_logging_file), exist_ok=True)
             if os.path.exists(logits_logging_file):
@@ -127,28 +128,29 @@ class GradientCallback(TrainerCallback):
             print(f"No gradients found at step {state.global_step}. Skipping logging.")
             return
 
-        gradient_logging_file = os.path.join(args.output_dir, "gradient_norms.json")
+        if args.local_rank == 0 or not torch_dist.is_initialized():
+            gradient_logging_file = os.path.join(args.output_dir, "gradient_norms.json")
 
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(gradient_logging_file), exist_ok=True)
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(gradient_logging_file), exist_ok=True)
 
-        # Try reading existing data
-        if os.path.exists(gradient_logging_file):
-            try:
-                with open(gradient_logging_file, "r") as f:
-                    data = json.load(f)
-                    if not isinstance(data, dict):  # Ensure valid JSON structure
-                        data = {}
-            except (json.JSONDecodeError, ValueError):
-                print("Corrupt JSON detected. Resetting log file.")
-                data = {}  # Reset file if it's corrupted
-        else:
-            data = {}  # Initialize if the file does not exist
+            # Try reading existing data
+            if os.path.exists(gradient_logging_file):
+                try:
+                    with open(gradient_logging_file, "r") as f:
+                        data = json.load(f)
+                        if not isinstance(data, dict):  # Ensure valid JSON structure
+                            data = {}
+                except (json.JSONDecodeError, ValueError):
+                    print("Corrupt JSON detected. Resetting log file.")
+                    data = {}  # Reset file if it's corrupted
+            else:
+                data = {}  # Initialize if the file does not exist
 
-        # Update dictionary and save back to file
-        data[state.global_step] = grads
-        with open(gradient_logging_file, "w") as f:
-            json.dump(data, f, indent=4)
+            # Update dictionary and save back to file
+            data[state.global_step] = grads
+            with open(gradient_logging_file, "w") as f:
+                json.dump(data, f, indent=4)
 
 
 @dataclass

@@ -1,11 +1,7 @@
 import math
 
-import mpmath
 import numpy as np
-import sympy as sp
-from scipy.special import comb
 from scipy.optimize import minimize
-from scipy.interpolate import pade as scipy_pade
 
 import torch
 import torch.nn as nn
