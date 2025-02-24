@@ -15,13 +15,16 @@ from .speechbrain.ecapa_tdnn_encoder import EcapaTdnnEncoder as SpeechBrainEcapa
 from .wespeaker.ecapa_tdnn_encoder import EcapaTdnnEncoder as WeSpeakerEcapaTdnnEncoder
 from .nemo.ecapa_tdnn_encoder import EcapaTdnnEncoder as NeMoEcapaTdnnEncoder
 from .angular_loss import (
+    NormFaceLoss, 
     NeMoArcFaceLoss, 
     SpeechBrainArcFaceLoss, 
     CosFaceLoss, 
     ArcFaceLoss, 
     SphereFaceLoss, 
     AdaCosLoss, 
-    ChebyshevArcFaceLoss
+    ChebyshevArcFaceLoss, 
+    LegendreArcFaceLoss, 
+    JacobiArcFaceLoss
 )
 
 
@@ -159,7 +162,11 @@ class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
             init_mode=config.init_mode, 
         )
 
-        if config.objective in ['additive_angular_margin', 'arc_face']:
+        if config.objective in ['norm_face']:
+            self.loss_fct = NormFaceLoss(
+                scale=config.angular_scale, 
+            )
+        elif config.objective in ['additive_angular_margin', 'arc_face']:
             self.loss_fct = ArcFaceLoss(
                 scale=config.angular_scale, 
                 margin=config.angular_margin, 
@@ -194,6 +201,20 @@ class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
                 scale=config.angular_scale, 
                 margin=config.angular_margin,
                 chebyshev_degree=10, 
+            )
+        elif config.objective in ['legendre_arc_face']:
+            self.loss_fct = LegendreArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                legendre_degree=10, 
+            )
+        elif config.objective in ['jacobi_arc_face']:
+            self.loss_fct = JacobiArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                alpha=0, 
+                beta=0, 
+                jacobi_degree=5, 
             )
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(
