@@ -118,7 +118,7 @@ class _Conv1d(nn.Module):
         if weight_norm:
             self.conv = nn.utils.weight_norm(self.conv)
 
-    def forward(self, x):
+    def forward(self, x, *args, **kwargs):
         """Returns the output of the convolution.
 
         Arguments
@@ -323,7 +323,7 @@ class _BatchNorm1d(nn.Module):
             track_running_stats=track_running_stats,
         )
 
-    def forward(self, x):
+    def forward(self, x, *args, **kwargs):
         """Returns the normalized input tensor.
 
         Arguments
@@ -417,7 +417,7 @@ class TDNNBlock(nn.Module):
         self.norm = BatchNorm1d(input_size=out_channels)
         self.dropout = nn.Dropout1d(p=dropout)
 
-    def forward(self, x):
+    def forward(self, x, *args, **kwargs):
         """Processes the input tensor x and returns an output tensor."""
         return self.dropout(self.norm(self.activation(self.conv(x))))
 
@@ -479,7 +479,7 @@ class Res2NetBlock(torch.nn.Module):
         )
         self.scale = scale
 
-    def forward(self, x):
+    def forward(self, x, *args, **kwargs):
         """Processes the input tensor x and returns an output tensor."""
         y = []
         for i, x_i in enumerate(torch.chunk(x, self.scale, dim=1)):
@@ -528,7 +528,7 @@ class SEBlock(nn.Module):
         )
         self.sigmoid = torch.nn.Sigmoid()
 
-    def forward(self, x, lengths=None):
+    def forward(self, x, lengths=None, *args, **kwargs):
         """Processes the input tensor x and returns an output tensor."""
         L = x.shape[-1]
         if lengths is not None:
@@ -672,7 +672,7 @@ class SERes2NetBlock(nn.Module):
                 kernel_size=1,
             )
 
-    def forward(self, x, lengths=None):
+    def forward(self, x, lengths=None, *args, **kwargs):
         """Processes the input tensor x and returns an output tensor."""
         residual = x
         if self.shortcut:
@@ -787,17 +787,14 @@ class EcapaTdnnEncoder(torch.nn.Module):
             dropout=dropout,
         )
 
-    def forward(self, x, lengths=None):
+    def forward(self, x, lengths=None, *args, **kwargs):
         """
         Args:
         x: tensor of shape (B, C, T)
         """
         xl = []
         for layer in self.blocks:
-            try:
-                x = layer(x, lengths=lengths)
-            except TypeError:
-                x = layer(x)
+            x = layer(x, lengths=lengths)
             xl.append(x)
 
         # Multi-layer feature aggregation
