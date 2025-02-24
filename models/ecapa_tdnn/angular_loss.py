@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 from scipy.optimize import minimize
+from scipy.special import roots_jacobi, eval_jacobi
 
 import torch
 import torch.nn as nn
@@ -31,6 +32,35 @@ class FocalLoss(Loss):
         return F_loss.mean()
 
 
+class NormFaceLoss(Loss):
+    """Computes NormFace Loss
+    
+    Paper: NormFace: L2 hypersphere embedding for face verification (MM'17)
+
+    args:
+    scale: scale value for cosine angle
+    margin: angular margin multiplied with cosine angle
+    """
+
+    def __init__(self, scale=30.0):
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        # Extract the logits corresponding to the true class
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        numerator = self.scale * cos_theta_target
+        # Exclude the target logits from denominator calculation
+        cos_theta_others = torch.cat(
+            [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
+        )
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        # Compute final loss
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
 class SphereFaceLoss(Loss):
     """Computes Multiplicative Angular Margin Softmax (SphereFace) Loss
     
@@ -51,7 +81,9 @@ class SphereFaceLoss(Loss):
         # Extract the logits corresponding to the true class
         cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
         theta_target = torch.acos(cos_theta_target.clamp(-1.0 + self.eps, 1.0 - self.eps))
-        numerator = self.scale * torch.cos(self.margin * theta_target)
+        k = torch.floor(theta_target * self.margin / torch.pi)
+        sign = torch.where(k % 2 == 0, 1, -1)
+        numerator = self.scale * (sign * torch.cos(self.margin * theta_target) - 2 * k)
         # Exclude the target logits from denominator calculation
         cos_theta_others = torch.cat(
             [torch.cat((logits[i, :y], logits[i, y + 1 :])).unsqueeze(0) for i, y in enumerate(labels)], dim=0
@@ -194,7 +226,6 @@ class ArcFaceLoss(nn.Module):
         denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
         # Compute final loss
         L = numerator - torch.log(denominator)
-        # convert back to fp16 at the end:
         loss = -torch.mean(L)
         return loss
 
@@ -305,11 +336,6 @@ class QamFace(Loss):
         return loss.mean()
 
 
-def safe_original_func(u, margin):
-    u_clipped = np.clip(u, -1, 1)
-    return np.cos(np.arccos(u_clipped) + margin)
-
-
 def bounded_chebyshev_approximation(func, degree=30, num_samples=1000, margin=0.2):
     x = np.linspace(-1, 1, num_samples)
     y = func(x, margin)
@@ -317,17 +343,21 @@ def bounded_chebyshev_approximation(func, degree=30, num_samples=1000, margin=0.
     return cheb.coef
 
 
-class ChebyshevArcFaceLoss(Loss):
+class ChebyshevV1ArcFaceLoss(Loss):
 
     def __init__(self, scale=30.0, margin=0.2, chebyshev_degree=10):
         super().__init__()
         self.eps = 1e-7
         self.scale = scale
         self.margin = margin
+
+        def original_func(u, margin):
+            u_clipped = np.clip(u, -1, 1)
+            return np.cos(np.arccos(u_clipped) + margin)
         
         # Precompute Chebyshev coefficients
         cheb_coeffs_np = bounded_chebyshev_approximation(
-            safe_original_func, degree=chebyshev_degree, margin=margin
+            original_func, degree=chebyshev_degree, margin=margin
         )
         self.register_buffer('coefficients', torch.from_numpy(cheb_coeffs_np).float())
         
@@ -420,12 +450,12 @@ class RemezArcFaceLoss(nn.Module):
         self.remez_degree = remez_degree
 
         # Define the target function with numerical safety
-        def f(cos_theta):
+        def original_func(cos_theta):
             cos_theta = np.clip(cos_theta, -1+self.eps, 1-self.eps)
             return cos_theta * np.cos(margin) - np.sqrt(1 - cos_theta**2) * np.sin(margin)
         
         # Compute optimized polynomial coefficients
-        self.poly_coeffs = compute_remez_poly(f, interval, remez_degree)
+        self.poly_coeffs = compute_remez_poly(original_func, interval, remez_degree)
         
         # Register as buffer for proper device placement
         self.register_buffer('coefficients', torch.tensor(self.poly_coeffs, dtype=torch.float32))
@@ -465,15 +495,6 @@ class RemezArcFaceLoss(nn.Module):
         # Compute final loss
         L = numerator - torch.log(denominator)
         return -torch.mean(L)
-
-
-def safe_target_func(u, margin):
-    """
-    Computes the target function f(u) = cos(arccos(u) + margin),
-    clipping u into [-1, 1] for numerical stability.
-    """
-    u_clipped = np.clip(u, -1, 1)
-    return np.cos(np.arccos(u_clipped) + margin)
 
 
 def clenshaw_curtis_chebyshev_coefficients(func, degree=30, num_samples=1000, margin=0.2):
@@ -581,7 +602,7 @@ class ChebyshevClenshawFunction(torch.autograd.Function):
         return grad_input, None
 
 
-class ChebyshevV2ArcFaceLoss(Loss):
+class ChebyshevArcFaceLoss(Loss):
 
     def __init__(self, scale=30.0, margin=0.2, chebyshev_degree=30, num_samples=1000, use_clenshaw=True):
         """
@@ -596,10 +617,18 @@ class ChebyshevV2ArcFaceLoss(Loss):
         self.scale = scale
         self.margin = margin
         self.use_clenshaw = use_clenshaw
+
+        def target_func(u, margin):
+            """
+            Computes the target function f(u) = cos(arccos(u) + margin),
+            clipping u into [-1, 1] for numerical stability.
+            """
+            u_clipped = np.clip(u, -1, 1)
+            return np.cos(np.arccos(u_clipped) + margin)
         
         # Precompute Chebyshev coefficients using Clenshaw–Curtis nodes
         cheb_coeffs_np = clenshaw_curtis_chebyshev_coefficients(
-            safe_target_func, degree=chebyshev_degree, num_samples=num_samples, margin=margin
+            target_func, degree=chebyshev_degree, num_samples=num_samples, margin=margin
         )
         self.register_buffer('coefficients', torch.from_numpy(cheb_coeffs_np).float())
         
@@ -635,5 +664,315 @@ class ChebyshevV2ArcFaceLoss(Loss):
         
         # Compute denominator and final loss
         denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
+def legendre_coefficients(func, degree=30, num_samples=1000, margin=0.2):
+    """
+    Compute Legendre series coefficients using Gauss-Legendre quadrature.
+    
+    Args:
+        func: Target function to approximate.
+        degree: Maximum degree of the Legendre polynomial series.
+        num_samples: Number of quadrature points.
+        margin: Margin parameter for the ArcFace loss.
+    
+    Returns:
+        np.ndarray: Array of Legendre coefficients.
+    """
+    nodes, weights = np.polynomial.legendre.leggauss(num_samples)
+    y = func(nodes, margin)
+    coeffs = []
+    for k in range(degree + 1):
+        # Evaluate k-th Legendre polynomial at nodes
+        P_k = np.polynomial.legendre.legval(nodes, [0]*k + [1])
+        # Compute the integral via quadrature
+        integral = np.sum(weights * y * P_k)
+        a_k = (2*k + 1) / 2 * integral
+        coeffs.append(a_k)
+    return np.array(coeffs)
+
+
+class LegendreDirectFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, coeffs):
+        """
+        Forward pass: Evaluate Legendre series at x.
+        
+        Args:
+            x: Input tensor in [-1 + eps, 1 - eps].
+            coeffs: Tensor of Legendre coefficients.
+        
+        Returns:
+            Tensor: Evaluated series.
+        """
+        n = coeffs.shape[0] - 1
+        P = [torch.ones_like(x)]  # P_0
+        if n >= 1:
+            P.append(x)  # P_1
+        for k in range(2, n + 1):
+            Pk = ((2*k - 1) * x * P[k-1] - (k - 1) * P[k-2]) / k
+            P.append(Pk)
+        # Compute the series sum
+        f = sum(coeffs[k] * P[k] for k in range(n + 1))
+        ctx.save_for_backward(x, coeffs)
+        ctx.P = P
+        ctx.n = n
+        return f
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Backward pass: Compute gradient with respect to x.
+        """
+        x, coeffs = ctx.saved_tensors
+        P, n = ctx.P, ctx.n
+        derivative = torch.zeros_like(x)
+        for k in range(1, n + 1):
+            # Ensure denominator is non-zero (x is clipped in practice)
+            denominator = 1 - x**2
+            # Add small epsilon to avoid division by zero
+            denominator = torch.where(denominator > 1e-6, denominator, torch.ones_like(denominator) * 1e-6)
+            Pk_prime = (k * P[k-1] - k * x * P[k]) / denominator
+            derivative += coeffs[k] * Pk_prime
+        grad_input = grad_output * derivative
+        return grad_input, None  # No gradient for coeffs
+
+
+class LegendreArcFaceLoss(Loss):
+    
+    def __init__(self, scale=30.0, margin=0.2, legendre_degree=10, num_samples=1000):
+        """
+        ArcFace loss with Legendre polynomial approximation.
+        
+        Args:
+            scale: Scaling factor for logits.
+            margin: Margin parameter m.
+            legendre_degree: Degree of the Legendre series.
+            num_samples: Number of quadrature points for coefficient computation.
+        """
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+
+        def target_func(u, margin):
+            """
+            Computes the target function f(u) = cos(arccos(u) + margin),
+            clipping u into [-1, 1] for numerical stability.
+            """
+            u_clipped = np.clip(u, -1, 1)
+            return np.cos(np.arccos(u_clipped) + margin)
+        
+        # Precompute coefficients
+        leg_coeffs_np = legendre_coefficients(target_func, degree=legendre_degree, num_samples=num_samples, margin=margin)
+        self.register_buffer('coefficients', torch.from_numpy(leg_coeffs_np).float())
+    
+    def legendre_eval(self, x):
+        """Evaluate the Legendre series at x."""
+        return LegendreDirectFunction.apply(x, self.coefficients)
+    
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        """
+        Compute the ArcFace loss.
+        
+        Args:
+            logits: Cosine similarities (batch_size, num_classes).
+            labels: Ground truth labels (batch_size,).
+        
+        Returns:
+            Tensor: Mean negative log likelihood loss.
+        """
+        # Extract target cosine similarities
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        
+        # Apply Legendre approximation and scaling
+        numerator = self.scale * self.legendre_eval(cos_theta_target)
+        
+        # Compute denominator (excluding target class)
+        cos_theta_others = torch.cat([
+            torch.cat((logits[i, :y], logits[i, y+1:])).unsqueeze(0)
+            for i, y in enumerate(labels)
+        ], dim=0)
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        
+        # Loss computation
+        L = numerator - torch.log(denominator)
+        return -torch.mean(L)
+
+
+def jacobi_coefficients(func, alpha, beta, degree=30, num_samples=1000, margin=0.2):
+    """
+    Compute Jacobi series coefficients using Gauss-Jacobi quadrature.
+    
+    Args:
+        func: Target function to approximate.
+        alpha (float): First parameter of the Jacobi polynomials (alpha > -1).
+        beta (float): Second parameter of the Jacobi polynomials (beta > -1).
+        degree (int): Maximum degree of the Jacobi polynomial series.
+        num_samples (int): Number of quadrature points.
+        margin (float): Margin parameter for the ArcFace loss.
+    
+    Returns:
+        np.ndarray: Array of Jacobi coefficients.
+    """
+    # Get quadrature nodes and weights
+    nodes, weights = roots_jacobi(num_samples, alpha, beta)
+    y = func(nodes, margin)
+    coeffs = []
+    
+    # Compute coefficients for each degree
+    for k in range(degree + 1):
+        P_k = eval_jacobi(k, alpha, beta, nodes)
+        integral_approx = np.sum(weights * y * P_k)
+        # Compute the norm using quadrature for numerical stability
+        h_k = np.sum(weights * P_k**2)
+        a_k = integral_approx / h_k
+        coeffs.append(a_k)
+    return np.array(coeffs)
+
+
+class JacobiDirectFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, coeffs, alpha, beta):
+        """
+        Forward pass: Evaluate Jacobi series at x.
+        
+        Args:
+            x (torch.Tensor): Input tensor in [-1 + eps, 1 - eps].
+            coeffs (torch.Tensor): Tensor of Jacobi coefficients.
+            alpha (float): First parameter of the Jacobi polynomials.
+            beta (float): Second parameter of the Jacobi polynomials.
+        
+        Returns:
+            torch.Tensor: Evaluated series.
+        """
+        n = coeffs.shape[0] - 1
+        batch_size = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        
+        # Initialize polynomials and their derivatives
+        P = torch.zeros(n + 1, batch_size, device=device, dtype=dtype)
+        P_prime = torch.zeros(n + 1, batch_size, device=device, dtype=dtype)
+        P[0] = 1.0
+        P_prime[0] = 0.0
+        
+        if n >= 1:
+            alpha_beta_sum = alpha + beta
+            P[1] = ((alpha_beta_sum + 2)/2 * x + (alpha - beta)/2)
+            P_prime[1] = (alpha_beta_sum + 2)/2
+        
+        # Compute higher-degree polynomials using recurrence
+        for k in range(2, n + 1):
+            temp = 2*k + alpha + beta - 1
+            A = temp * ((2*k + alpha + beta) * (2*k + alpha + beta - 2) * x + (alpha**2 - beta**2))
+            B = 2 * (k - 1) * (k + alpha - 1) * (k + beta - 1) * (2*k + alpha + beta)
+            D = 2 * k * (k + alpha + beta) * (2*k + alpha + beta - 2)
+            P[k] = (A * P[k-1] - B * P[k-2]) / D
+            A_prime = temp * (2*k + alpha + beta) * (2*k + alpha + beta - 2)
+            P_prime[k] = (A_prime * P[k-1] + A * P_prime[k-1] - B * P_prime[k-2]) / D
+        
+        # Evaluate the series
+        f = torch.sum(coeffs[:, None] * P, dim=0)
+        
+        # Save for backward pass
+        ctx.save_for_backward(P_prime, coeffs)
+        ctx.n = n
+        return f
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Backward pass: Compute gradient with respect to x.
+        
+        Args:
+            grad_output (torch.Tensor): Gradient from the next layer.
+        
+        Returns:
+            tuple: Gradients with respect to inputs (only x has gradient).
+        """
+        P_prime, coeffs = ctx.saved_tensors
+        n = ctx.n
+        derivative = torch.sum(coeffs[1:n+1, None] * P_prime[1:n+1], dim=0)
+        grad_input = grad_output * derivative
+        return grad_input, None, None, None  # No gradients for coeffs, alpha, beta
+
+
+class JacobiArcFaceLoss(Loss):
+
+    def __init__(self, scale=30.0, margin=0.2, alpha=0.0, beta=0.0, jacobi_degree=5, num_samples=1000):
+        """
+        ArcFace loss with Jacobi polynomial approximation.
+        
+        Args:
+            scale (float): Scaling factor for logits.
+            margin (float): Margin parameter m.
+            alpha (float): First parameter of the Jacobi polynomials (alpha > -1).
+            beta (float): Second parameter of the Jacobi polynomials (beta > -1).
+            jacobi_degree (int): Degree of the Jacobi series.
+            num_samples (int): Number of quadrature points for coefficient computation.
+        """
+        super().__init__()
+        self.eps = 1e-7
+        self.scale = scale
+        self.margin = margin
+        self.alpha = alpha
+        self.beta = beta
+
+        def target_func(u, margin):
+            """
+            Computes the target function f(u) = cos(arccos(u) + margin),
+            clipping u into [-1, 1] for numerical stability.
+            """
+            u_clipped = np.clip(u, -1, 1)
+            return np.cos(np.arccos(u_clipped) + margin)
+        
+        # Precompute Jacobi coefficients
+        jacobi_coeffs_np = jacobi_coefficients(target_func, alpha, beta, degree=jacobi_degree, num_samples=num_samples, margin=margin)
+        self.register_buffer('coefficients', torch.from_numpy(jacobi_coeffs_np).float())
+    
+    def jacobi_eval(self, x):
+        """
+        Evaluate the Jacobi series at x.
+        
+        Args:
+            x (torch.Tensor): Input tensor.
+        
+        Returns:
+            torch.Tensor: Evaluated series.
+        """
+        return JacobiDirectFunction.apply(x, self.coefficients, self.alpha, self.beta)
+    
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
+        """
+        Compute the ArcFace loss.
+        
+        Args:
+            logits (torch.Tensor): Cosine similarities of shape (batch_size, num_classes).
+            labels (torch.Tensor): Ground truth labels of shape (batch_size,).
+        
+        Returns:
+            torch.Tensor: Mean negative log likelihood loss.
+        """
+        # Extract target cosine similarities
+        cos_theta_target = torch.diagonal(logits.transpose(0, 1)[labels])
+        cos_theta_target = cos_theta_target.clamp(-1.0 + self.eps, 1 - self.eps)
+        
+        # Apply Jacobi approximation and scaling
+        numerator = self.scale * self.jacobi_eval(cos_theta_target)
+        
+        # Compute denominator (excluding target class)
+        cos_theta_others = torch.cat([
+            torch.cat((logits[i, :y], logits[i, y+1:])).unsqueeze(0)
+            for i, y in enumerate(labels)
+        ], dim=0)
+        denominator = torch.exp(numerator) + torch.sum(torch.exp(self.scale * cos_theta_others), dim=1)
+        
+        # Compute loss
         L = numerator - torch.log(denominator)
         return -torch.mean(L)
