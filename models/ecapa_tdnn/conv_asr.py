@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .logging import logger
 from .module import NeuralModule
 from .tdnn_attention import init_weights
-from .pool_layer import StatsPoolLayer, AttentivePoolLayer
+from .pool_layer import StatsPoolLayer, AttentivePoolLayer, iSqrtCovPoolLayer, MpnCovPoolLayer
 
 
 class SpeakerDecoder(NeuralModule):
@@ -38,6 +38,7 @@ class SpeakerDecoder(NeuralModule):
         pool_mode: str = 'xvector',
         angular: bool = False,
         attention_channels: int = 128,
+        mpn_channels: int = 64, 
         init_mode: str = "xavier_uniform",
     ):
         super().__init__()
@@ -56,6 +57,12 @@ class SpeakerDecoder(NeuralModule):
         elif self.pool_mode == 'attention':
             self._pooling = AttentivePoolLayer(inp_filters=feat_in, attention_channels=attention_channels)
             affine_type = 'conv'
+        elif self.pool_mode == 'mpn_cov':
+            self._pooling = MpnCovPoolLayer(input_dim=feat_in, dimension_reduction=mpn_channels)
+            affine_type = 'linear'
+        elif self.pool_mode == 'isqrt_cov':
+            self._pooling = iSqrtCovPoolLayer(input_dim=feat_in, dimension_reduction=mpn_channels)
+            affine_type = 'linear'
 
         shapes = [self._pooling.feat_in]
         for size in emb_sizes:
