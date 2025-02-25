@@ -487,6 +487,16 @@ def main():
         pred_ids = torch.argmax(logits, dim=1)
         return pred_ids
 
+    angular_losses = [
+        'norm_face', 
+        'additive_angular_margin', 'arc_face', 'nemo_arc_face', 'speechbrain_arc_face', 
+        'additive_margin', 'cos_face', 
+        'multiplicative_angular_margin', 'sphere_face', 
+        'adaptive_margin', 'ada_cos', 
+        'quadratic_additive_angular_margin', 'qam_face', 
+        'chebyshev_arc_face', 'remez_arc_face', 'legendre_arc_face', 'jacobi_arc_face'
+    ]
+
     config = ConfigClass.from_pretrained(
         model_args.config_name, 
         num_labels=num_classes, 
@@ -496,8 +506,11 @@ def main():
         angular_scale=model_args.angular_scale, 
         angular_margin=model_args.angular_margin, 
     )
+    config.angular = True if model_args.objective in angular_losses else False
+
     model = ModelClass(config, fp16=training_args.fp16)
     logger.info(f"Model structure: \n{model}")
+    logger.info(f'Angular is set to {config.angular}')
 
     if training_args.push_to_hub:
         ConfigClass.register_for_auto_class()
@@ -590,4 +603,5 @@ def main():
 
 
 if __name__ == '__main__':
+    torch.set_flush_denormal(True) # https://discuss.pytorch.org/t/training-time-gets-slower-and-slower-on-cpu/145483/4
     main()
