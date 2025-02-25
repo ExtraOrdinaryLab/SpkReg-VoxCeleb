@@ -84,6 +84,9 @@ def main(args):
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
+    if args.output_dir is None:
+        raise ValueError("No output directory specified. Set `--output_dir`.")
+
     feature_extractor = FeatureExtractorClass.from_pretrained(
         args.model_name_or_path, 
     )
@@ -171,6 +174,7 @@ def main(args):
 
         eer, eer_threshold = eer_score(positive_scores, negative_scores, return_threshold=True)
         mindcf, mindcf_threshold = mindcf_score(positive_scores, negative_scores, p_target=0.01, c_miss=1.0, c_fa=1.0, return_threshold=True)
+        logger.info(f"{trial_name}: EER = {eer:.6f}, minDCF = {mindcf:.6f}")
 
         with open(os.path.join(args.output_dir, 'verification_results.json'), "w") as f:
             result = {
@@ -183,8 +187,6 @@ def main(args):
             for data_point in trial_scores:
                 score, enrol_filename, test_filename = data_point
                 f.write(f'{score}\t{enrol_filename}\t{test_filename}\n')
-        
-        logger.info(f"{trial_name}: EER = {eer:.6f}, minDCF = {mindcf:.6f}")
 
 
 if __name__ == "__main__":
