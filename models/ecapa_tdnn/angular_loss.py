@@ -28,8 +28,40 @@ class FocalLoss(Loss):
     def forward(self, inputs, targets):
         ce_loss = F.cross_entropy(inputs, targets, reduction='none')
         pt = torch.exp(-ce_loss)
-        F_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-        return F_loss.mean()
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        return focal_loss.mean()
+
+
+class Poly1CrossEntropyLoss(Loss):
+
+    def __init__(self, epsilon=1.0):
+        self.epsilon = epsilon
+
+    def forward(self, inputs, targets):
+        # Compute cross entropy loss
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        # Apply polynomial loss function
+        pt = torch.exp(-ce_loss)
+        poly_loss = ce_loss + self.epsilon * (1 - pt)
+        return torch.mean(poly_loss)
+
+
+class Poly1FocalLoss(Loss):
+
+    def __init__(self, alpha=0.25, gamma=2.0, epsilon=1.0):
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+
+    def forward(self, inputs, targets):
+        # Compute cross entropy loss
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        # Compute focal loss
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        # Apply polynomial loss function
+        poly_loss = focal_loss + self.epsilon * torch.pow(1 - pt, self.gamma + 1)
+        return torch.mean(poly_loss)
 
 
 class NormFaceLoss(Loss):

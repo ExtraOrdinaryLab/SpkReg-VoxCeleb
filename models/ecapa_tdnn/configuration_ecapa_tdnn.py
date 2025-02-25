@@ -6,12 +6,13 @@ from transformers.configuration_utils import PretrainedConfig
 class EcapaTdnnConfig(PretrainedConfig):
 
     angular_losses = [
+        'norm_face', 
         'additive_angular_margin', 'arc_face', 'nemo_arc_face', 'speechbrain_arc_face', 
         'additive_margin', 'cos_face', 
         'multiplicative_angular_margin', 'sphere_face', 
         'adaptive_margin', 'ada_cos', 
         'quadratic_additive_angular_margin', 'qam_face', 
-        'pade_arc_face', 'taylor_arc_face', 'chebyshev_arc_face', 'bhaskara_arc_face'
+        'chebyshev_arc_face', 'remez_arc_face', 'legendre_arc_face', 'jacobi_arc_face'
     ]
 
     def __init__(
@@ -89,3 +90,4 @@ class EcapaTdnnConfig(PretrainedConfig):
         self.angular_scale = angular_scale
         self.angular_margin = angular_margin
         self.label_smoothing = label_smoothing
+        assert objective in self.angular_losses

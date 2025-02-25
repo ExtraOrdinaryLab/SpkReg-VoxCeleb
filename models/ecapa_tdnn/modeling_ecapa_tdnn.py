@@ -15,6 +15,9 @@ from .speechbrain.ecapa_tdnn_encoder import EcapaTdnnEncoder as SpeechBrainEcapa
 from .wespeaker.ecapa_tdnn_encoder import EcapaTdnnEncoder as WeSpeakerEcapaTdnnEncoder
 from .nemo.ecapa_tdnn_encoder import EcapaTdnnEncoder as NeMoEcapaTdnnEncoder
 from .angular_loss import (
+    FocalLoss, 
+    Poly1CrossEntropyLoss, 
+    Poly1FocalLoss, 
     NormFaceLoss, 
     NeMoArcFaceLoss, 
     SpeechBrainArcFaceLoss, 
@@ -23,6 +26,7 @@ from .angular_loss import (
     SphereFaceLoss, 
     AdaCosLoss, 
     ChebyshevArcFaceLoss, 
+    RemezArcFaceLoss, 
     LegendreArcFaceLoss, 
     JacobiArcFaceLoss
 )
@@ -202,6 +206,12 @@ class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
                 margin=config.angular_margin,
                 chebyshev_degree=10, 
             )
+        elif config.objective in ['remez_arc_face']:
+            self.loss_fct = RemezArcFaceLoss(
+                scale=config.angular_scale, 
+                margin=config.angular_margin,
+                remez_degree=10, 
+            )
         elif config.objective in ['legendre_arc_face']:
             self.loss_fct = LegendreArcFaceLoss(
                 scale=config.angular_scale, 
@@ -219,6 +229,21 @@ class EcapaTdnnForSequenceClassification(EcapaTdnnPreTrainedModel):
         elif config.objective == 'cross_entropy':
             self.loss_fct = nn.CrossEntropyLoss(
                 label_smoothing=config.label_smoothing
+            )
+        elif config.objective == 'focal':
+            self.loss_fct = FocalLoss(
+                alpha=1, 
+                gamma=2, 
+            )
+        elif config.objective == 'poly_cross_entropy':
+            self.loss_fct = Poly1CrossEntropyLoss(
+                epsilon=1
+            )
+        elif config.objective == 'poly_focal':
+            self.loss_fct = Poly1FocalLoss(
+                alpha=0.25, 
+                gamma=2, 
+                epsilon=1
             )
 
         self.init_weights()
